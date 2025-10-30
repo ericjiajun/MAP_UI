@@ -535,3 +535,5 @@ class OSMEditor {
 }
 
 export default OSMEditor;
+
+    // 绘图
