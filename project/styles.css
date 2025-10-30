@@ -1,0 +1,223 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 5px;
+    background-color: #f0f0f0;
+}
+
+.main-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 5px;
+}
+
+.toolbar-container {
+    margin-bottom: 5px;
+}
+
+.toolbar {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 2px;
+    flex-wrap: wrap;
+}
+
+.toolbar-group {
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 2px 5px;
+    background-color: white;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.toolbar-group label {
+    font-size: 12px;
+    font-weight: bold;
+    margin-right: 5px;
+}
+
+.toolbar-group button {
+    padding: 2px 8px;
+    font-size: 12px;
+    min-width: 60px;
+}
+
+.toolbar-group select {
+    padding: 2px 5px;
+    font-size: 12px;
+    min-width: 80px;
+}
+
+.toolbar-group input[type="checkbox"] {
+    margin-right: 3px;
+}
+
+.toolbar-group input[type="range"] {
+    width: 80px;
+}
+
+.content-container {
+    display: flex;
+    flex: 1;
+    gap: 5px;
+}
+
+.canvas-container {
+    flex: 1;
+    border: 1px solid #ccc;
+    position: relative;
+    overflow: hidden;
+}
+
+canvas {
+    display: block;
+    cursor: crosshair;
+}
+
+.properties-panel {
+    width: 280px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background-color: white;
+    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.panel-section {
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 8px;
+}
+
+.panel-section h3 {
+    margin: 0 0 5px 0;
+    font-size: 14px;
+    font-weight: bold;
+    color: #333;
+}
+
+.status-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 5px;
+    font-size: 12px;
+}
+
+.status-label {
+    font-weight: bold;
+}
+
+.info-text {
+    height: 120px;
+    border: 1px solid #ccc;
+    padding: 5px;
+    font-size: 12px;
+    font-family: monospace;
+    overflow-y: auto;
+    resize: vertical;
+}
+
+.view-info {
+    font-size: 12px;
+    text-align: center;
+    padding: 5px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+}
+
+.dialog {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    border: 2px solid #333;
+    border-radius: 5px;
+    padding: 20px;
+    z-index: 1000;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.5);
+    z-index: 999;
+}
+
+.dialog h3 {
+    margin: 0 0 15px 0;
+    font-size: 16px;
+}
+
+.dialog-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 15px;
+}
+
+.form-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.form-row label {
+    min-width: 80px;
+}
+
+.form-row input, .form-row select {
+    flex: 1;
+    padding: 3px;
+}
+
+button {
+    padding: 5px 10px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    background-color: white;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #f0f0f0;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.hidden {
+    display: none;
+}
+
+.measure-info {
+    font-weight: bold;
+    color: blue;
+}
+
+.threed-controls {
+    background-color: #f8f8f8;
+}
+
+.range-input {
+    width: 60px;
+}
+
+.range-label {
+    font-size: 10px;
+    min-width: 30px;
+}

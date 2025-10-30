@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM地图编辑器 - 重构版</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="main-container">
+        <!-- 工具栏 -->
+        <div class="toolbar-container">
+            <!-- 第一行工具栏 -->
+            <div class="toolbar">
+                <div class="toolbar-group">
+                    <label>文件</label>
+                    <button onclick="editor.importOSM()">导入</button>
+                    <button onclick="editor.exportOSM()">导出</button>
+                    <button onclick="editor.clearData()">清除</button>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>编辑</label>
+                    <button id="undoBtn" onclick="editor.undo()" disabled>撤销</button>
+                    <button id="redoBtn" onclick="editor.redo()" disabled>重做</button>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>编辑模式</label>
+                    <select id="modeSelect" onchange="editor.onModeChange()">
+                        <option value="select">选择</option>
+                        <option value="add_node">添加节点</option>
+                        <option value="add_way">添加路径</option>
+                        <option value="add_polygon">添加多边形</option>
+                        <option value="box_select">框选</option>
+                        <option value="measure">测量</option>
+                    </select>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>选择</label>
+                    <button onclick="editor.selectAllPolygons()">全选</button>
+                    <button onclick="editor.clearSelection()">清选</button>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>视图控制</label>
+                    <button onclick="editor.resetView()">重置</button>
+                    <button onclick="editor.fitToWindow()">适应</button>
+                    <button onclick="editor.rotateView(-15)">↺</button>
+                    <button onclick="editor.rotateView(15)">↻</button>
+                </div>
+            </div>
+            
+            <!-- 第二行工具栏 -->
+            <div class="toolbar">
+                <div class="toolbar-group">
+                    <label>坐标系统</label>
+                    <select id="coordSelect" onchange="editor.onCoordSystemChange()">
+                        <option value="geographic">经纬度</option>
+                        <option value="scene">场景坐标</option>
+                    </select>
+                    <button onclick="editor.setSceneOrigin()">设原点</button>
+                    <button onclick="editor.useCurrentCenterAsOrigin()">用中心</button>
+                    <button onclick="editor.showMapCalibration()">地图校正</button>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>显示模式</label>
+                    <select id="renderSelect" onchange="editor.onRenderModeChange()">
+                        <option value="geometry">几何</option>
+                        <option value="rendered">渲染</option>
+                        <option value="both">两者</option>
+                        <option value="3d">3D视图</option>
+                    </select>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>显示选项</label>
+                    <input type="checkbox" id="labelsCheck" onchange="editor.toggleLabels()" checked>
+                    <label for="labelsCheck">标签</label>
+                    <input type="checkbox" id="gridCheck" onchange="editor.toggleGrid()" checked>
+                    <label for="gridCheck">网格</label>
+                    <input type="checkbox" id="compassCheck" onchange="editor.toggleCompass()" checked>
+                    <label for="compassCheck">指南针</label>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>3D显示</label>
+                    <input type="checkbox" id="show3DLabelsCheck" onchange="editor.toggle3DLabels()" checked>
+                    <label for="show3DLabelsCheck">3D标签</label>
+                    <input type="checkbox" id="showLandscapeCheck" onchange="editor.toggleLandscape()" checked>
+                    <label for="showLandscapeCheck">地貌</label>
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>工具</label>
+                    <button onclick="editor.showGridControlPanel()">网格面板</button>
+                    <button onclick="editor.show3DSettings()">3D设置</button>
+                    <button onclick="editor.editTags()">编辑标签</button>
+                </div>
+            </div>
+            
+            <!-- 第三行工具栏 - 3D控制 -->
+            <div class="toolbar" id="threedToolbar" style="display: none;">
+                <div class="toolbar-group threed-controls">
+                    <label>3D视角</label>
+                    <label class="range-label">俯视</label>
+                    <input type="range" id="viewAngleSlider" min="0" max="90" value="45" oninput="editor.update3DView()">
+                    <label class="range-label">旋转</label>
+                    <input type="range" id="rotationAngleSlider" min="0" max="360" value="0" oninput="editor.update3DView()">
+                    <label class="range-label">高度</label>
+                    <input type="range" id="heightScaleSlider" min="0.1" max="3" step="0.1" value="1" oninput="editor.update3DView()">
+                </div>
+                
+                <div class="toolbar-group">
+                    <label>3D工具</label>
+                    <button onclick="editor.resetCameraView()">重置相机</button>
+                    <button onclick="editor.editBuildingHeight()">编辑高度</button>
+                    <button onclick="editor.editBuildingColor()">编辑颜色</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 主内容区域 -->
+        <div class="content-container">
+            <!-- 画布区域 -->
+            <div class="canvas-container">
+                <canvas id="mapCanvas"></canvas>
+            </div>
+            
+            <!-- 属性面板 -->
+            <div class="properties-panel">
+                <div class="panel-section">
+                    <h3>坐标信息</h3>
+                    <div class="status-grid">
+                        <span class="status-label">位置:</span>
+                        <span id="coordLabel">-</span>
+                        <span class="status-label">比例尺:</span>
+                        <span id="scaleLabel">-</span>
+                    </div>
+                </div>
+                
+                <div class="panel-section">
+                    <h3>创建状态</h3>
+                    <div class="status-grid">
+                        <span class="status-label">状态:</span>
+                        <span id="createStatusLabel">无</span>
+                        <span class="status-label">网格:</span>
+                        <span id="gridStatusLabel">隐藏</span>
+                        <span class="status-label">多选:</span>
+                        <span id="multiselectLabel">未选择</span>
+                    </div>
+                </div>
+                
+                <div class="panel-section">
+                    <h3>选择信息</h3>
+                    <textarea id="selectionInfo" class="info-text" readonly>未选择任何对象</textarea>
+                </div>
+                
+                <div class="panel-section">
+                    <h3>视图信息</h3>
+                    <div id="viewLabel" class="view-info">-</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 引入所有模块化的JS文件 -->
+    <script type="module">
+        // 导入所有模块
+        import ICommand from './js/interfaces/ICommand.js';
+        import MoveNodeCommand from './js/commands/MoveNodeCommand.js';
+        import DeleteObjectCommand from './js/commands/DeleteObjectCommand.js';
+        import AddObjectCommand from './js/commands/AddObjectCommand.js';
+        import ModifyTagsCommand from './js/commands/ModifyTagsCommand.js';
+        import GridSettings from './js/models/GridSettings.js';
+        import CoordinateSystem from './js/models/CoordinateSystem.js';
+        import ThreeDSettings from './js/models/ThreeDSettings.js';
+        import OSMEditor from './js/OSMEditor.js';
+
+        // 将命令类导出到全局,以便OSMEditor可以使用
+        window.ICommand = ICommand;
+        window.MoveNodeCommand = MoveNodeCommand;
+        window.DeleteObjectCommand = DeleteObjectCommand;
+        window.AddObjectCommand = AddObjectCommand;
+        window.ModifyTagsCommand = ModifyTagsCommand;
+        window.GridSettings = GridSettings;
+        window.CoordinateSystem = CoordinateSystem;
+        window.ThreeDSettings = ThreeDSettings;
+
+        // 初始化编辑器
+        let editor;
+        window.addEventListener('load', () => {
+            editor = new OSMEditor();
+            window.editor = editor;
+            console.log('OSM编辑器已初始化');
+            console.log('使用接口模式: ICommand -> execute(), undo(), getName()');
+        });
+    </script>
+</body>
+</html>

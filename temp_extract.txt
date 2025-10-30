@@ -1,0 +1,3520 @@
+﻿
+>         class OSMEditor {
+              constructor() {
+                  this.canvas = document.getElementById('mapCanvas');
+                  this.ctx = this.canvas.getContext('2d');
+                  
+                  // 鏁版嵁瀛樺偍
+                  this.nodes = new Map();
+                  this.ways = new Map();
+                  this.relations = new Map();
+                  
+                  // 鎾ら攢/閲嶅仛绯荤粺
+                  this.undoStack = [];
+                  this.redoStack = [];
+                  this.maxUndoLevels = 50;
+                  
+                  // 瑙嗗浘鍙傛暟
+                  this.scale = 100000;
+                  this.centerX = 0;
+                  this.centerY = 0;
+                  this.rotation = 0;
+                  
+                  // 浜や簰鐘舵€?
+                  this.selectedNode = null;
+                  this.selectedWay = null;
+                  this.selectedWays = new Set();
+                  this.dragStart = null;
+                  this.mode = "select";
+                  this.creatingWay = [];
+                  this.draggingNode = false;
+                  this.nodeStartPos = null;
+                  
+                  // 妗嗛€夊姛鑳?
+                  this.boxSelecting = false;
+                  this.boxStart = null;
+                  this.boxCurrent = null;
+                  
+                  // 璺濈娴嬮噺鍔熻兘
+                  this.measuring = false;
+                  this.measurePoints = [];
+                  this.measureDistances = [];
+                  
+                  // 娓叉煋妯″紡
+                  this.renderMode = "geometry";
+                  this.showLabels = true;
+                  
+                  // 缃戞牸璁剧疆
+                  this.gridSettings = new GridSettings();
+                  
+                  // 鍧愭爣绯荤粺
+                  this.coordSystem = new CoordinateSystem();
+                  
+                  // 3D璁剧疆
+                  this.threeDSettings = new ThreeDSettings();
+                  
+                  // 鎸囧崡閽堝弬鏁?
+                  this.compassSize = 80;
+                  
+                  // 鍦扮悊鍧愭爣杞崲甯告暟
+                  this.metersPerDegreeLat = 111320;
+                  
+                  this.setupCanvas();
+                  this.bindEvents();
+                  this.updateUndoRedoButtons();
+                  this.redraw();
+              }
+  
+              setupCanvas() {
+                  this.resizeCanvas();
+                  window.addEventListener('resize', () => this.resizeCan
+vas());
+              }
+  
+              resizeCanvas() {
+                  const container = this.canvas.parentElement;
+                  this.canvas.width = container.clientWidth;
+                  this.canvas.height = container.clientHeight;
+                  this.redraw();
+              }
+  
+              bindEvents() {
+                  // 榧犳爣浜嬩欢
+                  this.canvas.addEventListener('mousedown', (e) => this.
+onClick(e));
+                  this.canvas.addEventListener('contextmenu', (e) => {
+                      e.preventDefault();
+                      this.onRightClick(e);
+                  });
+                  this.canvas.addEventListener('mousemove', (e) => this.
+onMouseMove(e));
+                  this.canvas.addEventListener('mouseup', (e) => this.on
+Release(e));
+                  this.canvas.addEventListener('wheel', (e) => this.onSc
+roll(e));
+                  this.canvas.addEventListener('dblclick', (e) => this.o
+nDoubleClick(e));
+                  
+                  // 閿洏浜嬩欢
+                  document.addEventListener('keydown', (e) => this.onKey
+(e));
+                  
+                  // 鐢诲竷鑾峰緱鐒︾偣
+                  this.canvas.tabIndex = 0;
+                  this.canvas.focus();
+              }
+  
+              executeCommand(command) {
+                  command.execute();
+                  this.undoStack.push(command);
+                  this.redoStack = [];
+                  
+                  if (this.undoStack.length > this.maxUndoLevels) {
+                      this.undoStack.shift();
+                  }
+                  
+                  this.updateUndoRedoButtons();
+              }
+  
+              undo() {
+                  if (this.undoStack.length > 0) {
+                      const command = this.undoStack.pop();
+                      command.undo();
+                      this.redoStack.push(command);
+                      this.updateUndoRedoButtons();
+                      this.redraw();
+                      this.updateSelectionInfo();
+                  }
+              }
+  
+              redo() {
+                  if (this.redoStack.length > 0) {
+                      const command = this.redoStack.pop();
+                      command.execute();
+                      this.undoStack.push(command);
+                      this.updateUndoRedoButtons();
+                      this.redraw();
+                      this.updateSelectionInfo();
+                  }
+              }
+  
+              updateUndoRedoButtons() {
+                  document.getElementById('undoBtn').disabled = this.und
+oStack.length === 0;
+                  document.getElementById('redoBtn').disabled = this.red
+oStack.length === 0;
+              }
+  
+              onModeChange() {
+                  this.mode = document.getElementById('modeSelect').valu
+e;
+                  const cursors = {
+                      "select": "default",
+                      "add_node": "crosshair",
+                      "add_way": "crosshair",
+                      "add_polygon": "crosshair",
+                      "box_select": "crosshair",
+                      "measure": "crosshair"
+                  };
+                  this.canvas.style.cursor = cursors[this.mode] || "defa
+ult";
+                  
+                  this.creatingWay = [];
+                  this.updateCreateStatus();
+                  
+                  if (this.mode !== "measure" && this.measurePoints.leng
+th > 0) {
+                      this.clearMeasurement();
+                  }
+              }
+  
+              onRenderModeChange() {
+                  this.renderMode = document.getElementById('renderSelec
+t').value;
+                  
+                  const threedToolbar = document.getElementById('threedT
+oolbar');
+                  if (this.renderMode === '3d') {
+                      threedToolbar.style.display = 'flex';
+                      this.update3DView();
+                  } else {
+                      threedToolbar.style.display = 'none';
+                  }
+                  
+                  this.redraw();
+              }
+  
+              onCoordSystemChange() {
+                  this.coordSystem.coordType = document.getElementById('
+coordSelect').value;
+                  this.redraw();
+              }
+  
+              toggleLabels() {
+                  this.showLabels = document.getElementById('labelsCheck
+').checked;
+                  this.redraw();
+              }
+  
+              toggleGrid() {
+                  this.gridSettings.showGrid = document.getElementById('
+gridCheck').checked;
+                  this.updateGridStatus();
+                  this.redraw();
+              }
+  
+              toggleCompass() {
+                  this.redraw();
+              }
+  
+              toggle3DLabels() {
+                  this.threeDSettings.show3DLabels = document.getElement
+ById('show3DLabelsCheck').checked;
+                  this.redraw();
+              }
+  
+              toggleLandscape() {
+                  this.threeDSettings.showLandscape = document.getElemen
+tById('showLandscapeCheck').checked;
+                  this.redraw();
+              }
+  
+              // 3D鍔熻兘鏂规硶
+              update3DView() {
+                  if (this.renderMode === '3d') {
+                      this.threeDSettings.viewAngle = parseFloat(documen
+t.getElementById('viewAngleSlider').value);
+                      this.threeDSettings.rotationAngle = parseFloat(doc
+ument.getElementById('rotationAngleSlider').value);
+                      this.threeDSettings.heightScale = parseFloat(docum
+ent.getElementById('heightScaleSlider').value);
+                      this.redraw();
+                  }
+              }
+  
+              resetCameraView() {
+                  document.getElementById('viewAngleSlider').value = 45;
+                  document.getElementById('rotationAngleSlider').value =
+ 0;
+                  document.getElementById('heightScaleSlider').value = 1
+;
+                  this.update3DView();
+              }
+  
+              getBuildingHeight(tags) {
+                  if (tags.height) {
+                      const height = parseFloat(tags.height);
+                      if (!isNaN(height)) return height;
+                  }
+                  
+                  if (tags.levels || tags['building:levels']) {
+                      const levels = parseFloat(tags.levels || tags['bui
+lding:levels']);
+                      if (!isNaN(levels)) return levels * 3;
+                  }
+                  
+                  if (tags['building:height']) {
+                      const height = parseFloat(tags['building:height'])
+;
+                      if (!isNaN(height)) return height;
+                  }
+                  
+                  const buildingType = tags.building;
+                  const defaultHeights = {
+                      'house': 6,
+                      'residential': 15,
+                      'commercial': 20,
+                      'retail': 8,
+                      'office': 25,
+                      'industrial': 12,
+                      'school': 10,
+                      'university': 15,
+                      'hospital': 18,
+                      'apartment': 30,
+                      'hotel': 25
+                  };
+                  
+                  return defaultHeights[buildingType] || this.threeDSett
+ings.defaultHeight;
+              }
+  
+              getBuildingColor(tags) {
+                  // 妫€鏌ュ缓绛戠墿棰滆壊鏍囩
+                  let color = null;
+                  
+                  if (tags['building:colour']) {
+                      color = tags['building:colour'];
+                  } else if (tags['building:color']) {
+                      color = tags['building:color'];
+                  } else if (tags.colour) {
+                      color = tags.colour;
+                  } else if (tags.color) {
+                      color = tags.color;
+                  }
+                  
+                  // 濡傛灉鎵惧埌浜嗛鑹诧紝纭繚鏍煎紡姝ｇ‘
+                  if (color) {
+                      return this.ensureHexColor(color);
+                  }
+                  
+                  // 濡傛灉娌℃湁鎵惧埌棰滆壊锛岃繑鍥為粯璁ら鑹?
+                  return this.threeDSettings.defaultBuildingColor;
+              }
+  
+              // 3D娓叉煋寤虹瓚鐗?
+              drawBuilding3D(points, tags, wayId) {
+                  if (points.length < 3) return;
+                  
+                  const height = this.getBuildingHeight(tags);
+                  const scaledHeight = height * this.threeDSettings.heig
+htScale;
+                  const buildingColor = this.getBuildingColor(tags);
+                  
+                  // 鑰冭檻鏃嬭浆鍜屼刊瑙嗚搴?
+                  const viewAngleRad = this.threeDSettings.viewAngle * M
+ath.PI / 180;
+                  const rotationRad = this.threeDSettings.rotationAngle 
+* Math.PI / 180;
+                  const heightPixels = scaledHeight * this.scale / this.
+metersPerDegreeLat;
+                  
+                  const offsetX = heightPixels * Math.cos(viewAngleRad) 
+* Math.cos(rotationRad) * 0.6;
+                  const offsetY = -heightPixels * Math.sin(viewAngleRad)
+ * 0.6 + heightPixels * Math.cos(viewAngleRad) * Math.sin(rotationRad) *
+ 0.3;
+                  
+                  const topPoints = points.map(([x, y]) => [x + offsetX,
+ y + offsetY]);
+                  
+                  const isSelected = this.selectedWays.has(wayId);
+                  
+                  // 缁樺埗寤虹瓚鐗╅槾褰?
+                  this.ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                  this.ctx.beginPath();
+                  this.ctx.moveTo(points[0][0], points[0][1]);
+                  for (let i = 1; i < points.length; i++) {
+                      this.ctx.lineTo(points[i][0], points[i][1]);
+                  }
+                  this.ctx.closePath();
+                  this.ctx.fill();
+                  
+                  // 缁樺埗寤虹瓚鐗╀晶闈?
+                  for (let i = 0; i < points.length - 1; i++) {
+                      const [x1, y1] = points[i];
+                      const [x2, y2] = points[i + 1];
+                      const [tx1, ty1] = topPoints[i];
+                      const [tx2, ty2] = topPoints[i + 1];
+                      
+                      // 璁＄畻鍏夌収
+                      const wallNormalX = -(y2 - y1);
+                      const wallNormalY = x2 - x1;
+                      const wallLength = Math.sqrt(wallNormalX * wallNor
+malX + wallNormalY * wallNormalY);
+                      const normalX = wallNormalX / wallLength;
+                      const normalY = wallNormalY / wallLength;
+                      
+                      const lightAngleRad = this.threeDSettings.lightAng
+le * Math.PI / 180;
+                      const lightX = Math.cos(lightAngleRad);
+                      const lightY = Math.sin(lightAngleRad);
+                      const lightIntensity = Math.max(0.3, Math.abs(norm
+alX * lightX + normalY * lightY));
+                      
+                      let wallColor = buildingColor;
+                      if (isSelected) {
+                          wallColor = '#FFFF00';
+                      } else {
+                          // 搴旂敤鍏夌収鏁堟灉
+                          const rgb = this.hexToRgb(buildingColor);
+                          if (rgb) {
+                              const r = Math.round(rgb.r * lightIntensit
+y * this.threeDSettings.wallColorIntensity);
+                              const g = Math.round(rgb.g * lightIntensit
+y * this.threeDSettings.wallColorIntensity);
+                              const b = Math.round(rgb.b * lightIntensit
+y * this.threeDSettings.wallColorIntensity);
+                              wallColor = `rgb(${r}, ${g}, ${b})`;
+                          } else {
+                              // 濡傛灉棰滆壊杞崲澶辫触锛屼娇鐢ㄥ師鑹蹭絾闄嶄綆浜害
+                              wallColor = buildingColor;
+                          }
+                      }
+                      
+                      // 缁樺埗澧欓潰
+                      this.ctx.fillStyle = wallColor;
+                      this.ctx.strokeStyle = '#000000';
+                      this.ctx.lineWidth = 1;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(x1, y1);
+                      this.ctx.lineTo(x2, y2);
+                      this.ctx.lineTo(tx2, ty2);
+                      this.ctx.lineTo(tx1, ty1);
+                      this.ctx.closePath();
+                      this.ctx.fill();
+                      this.ctx.stroke();
+                  }
+                  
+                  // 缁樺埗寤虹瓚鐗╅《闈?
+                  let topColor = buildingColor;
+                  if (isSelected) {
+                      topColor = '#FFFF00';
+                  } else {
+                      // 椤堕潰浣跨敤杈冧寒鐨勯鑹?
+                      const rgb = this.hexToRgb(buildingColor);
+                      if (rgb) {
+                          const r = Math.min(255, Math.round(rgb.r * 1.2
+));
+                          const g = Math.min(255, Math.round(rgb.g * 1.2
+));
+                          const b = Math.min(255, Math.round(rgb.b * 1.2
+));
+                          topColor = `rgb(${r}, ${g}, ${b})`;
+                      } else {
+                          // 濡傛灉棰滆壊杞崲澶辫触锛岀洿鎺ヤ娇鐢ㄥ師鑹?
+                          topColor = buildingColor;
+                      }
+                  }
+                  
+                  this.ctx.fillStyle = topColor;
+                  this.ctx.strokeStyle = '#000000';
+                  this.ctx.lineWidth = 2;
+                  this.ctx.beginPath();
+                  this.ctx.moveTo(topPoints[0][0], topPoints[0][1]);
+                  for (let i = 1; i < topPoints.length; i++) {
+                      this.ctx.lineTo(topPoints[i][0], topPoints[i][1]);
+                  }
+                  this.ctx.closePath();
+                  this.ctx.fill();
+                  this.ctx.stroke();
+                  
+                  // 缁樺埗楂樺害鏍囩
+                  if (this.threeDSettings.show3DLabels) {
+                      const centerX = topPoints.reduce((sum, p) => sum +
+ p[0], 0) / topPoints.length;
+                      const centerY = topPoints.reduce((sum, p) => sum +
+ p[1], 0) / topPoints.length;
+                      
+                      const heightText = height < 1000 ? `${height.toFix
+ed(1)}m` : `${(height/1000).toFixed(2)}km`;
+                      
+                      this.ctx.fillStyle = 'white';
+                      this.ctx.strokeStyle = 'black';
+                      this.ctx.lineWidth = 1;
+                      this.ctx.font = 'bold 9px Arial';
+                      this.ctx.textAlign = 'center';
+                      this.ctx.textBaseline = 'middle';
+                      
+                      const textWidth = this.ctx.measureText(heightText)
+.width;
+                      this.ctx.fillRect(centerX - textWidth/2 - 2, cente
+rY - 6, textWidth + 4, 12);
+                      this.ctx.strokeRect(centerX - textWidth/2 - 2, cen
+terY - 6, textWidth + 4, 12);
+                      
+                      this.ctx.fillStyle = 'black';
+                      this.ctx.fillText(heightText, centerX, centerY);
+                  }
+              }
+  
+              // 3D娓叉煋鍏朵粬鍑犱綍鍥惧舰
+              drawWay3D(points, tags, isClosed, isSelected, isMultiSelec
+ted) {
+                  if (points.length < 2) return;
+                  
+                  // 3D楂樺害鍋忕Щ锛堟瘮寤虹瓚鐗╀綆寰堝锛?
+                  const viewAngleRad = this.threeDSettings.viewAngle * M
+ath.PI / 180;
+                  const rotationRad = this.threeDSettings.rotationAngle 
+* Math.PI / 180;
+                  const baseHeight = 2; // 鍩虹楂樺害2绫?
+                  const heightPixels = baseHeight * this.scale / this.me
+tersPerDegreeLat;
+                  
+                  const offsetX = heightPixels * Math.cos(viewAngleRad) 
+* Math.cos(rotationRad) * 0.6;
+                  const offsetY = -heightPixels * Math.sin(viewAngleRad)
+ * 0.6 + heightPixels * Math.cos(viewAngleRad) * Math.sin(rotationRad) *
+ 0.3;
+                  
+                  const style = this.getWayStyle(tags);
+                  const color = isSelected ? 'red' : (isMultiSelected ? 
+'yellow' : style.fill);
+                  const width = (isSelected || isMultiSelected) ? style.
+width + 2 : style.width;
+                  
+                  if (isClosed && points.length >= 3) {
+                      // 缁樺埗搴曢潰闃村奖
+                      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0], points[0][1]);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0], points[i][1]);
+                      }
+                      this.ctx.closePath();
+                      this.ctx.fill();
+                      
+                      // 缁樺埗渚ч潰
+                      for (let i = 0; i < points.length - 1; i++) {
+                          const [x1, y1] = points[i];
+                          const [x2, y2] = points[i + 1];
+                          const [tx1, ty1] = [x1 + offsetX, y1 + offsetY
+];
+                          const [tx2, ty2] = [x2 + offsetX, y2 + offsetY
+];
+                          
+                          this.ctx.fillStyle = color;
+                          this.ctx.strokeStyle = 'black';
+                          this.ctx.lineWidth = 1;
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(x1, y1);
+                          this.ctx.lineTo(x2, y2);
+                          this.ctx.lineTo(tx2, ty2);
+                          this.ctx.lineTo(tx1, ty1);
+                          this.ctx.closePath();
+                          this.ctx.fill();
+                          this.ctx.stroke();
+                      }
+                      
+                      // 缁樺埗椤堕潰
+                      this.ctx.fillStyle = color;
+                      this.ctx.strokeStyle = 'black';
+                      this.ctx.lineWidth = width;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0] + offsetX, points[0][
+1] + offsetY);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0] + offsetX, points
+[i][1] + offsetY);
+                      }
+                      this.ctx.closePath();
+                      this.ctx.fill();
+                      this.ctx.stroke();
+                  } else {
+                      // 缁樺埗閬撹矾鐨?D鏁堟灉
+                      // 搴曢儴闃村奖绾?
+                      this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+                      this.ctx.lineWidth = width + 2;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0], points[0][1]);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0], points[i][1]);
+                      }
+                      this.ctx.stroke();
+                      
+                      // 椤堕儴绾挎潯
+                      this.ctx.strokeStyle = color;
+                      this.ctx.lineWidth = width;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0] + offsetX, points[0][
+1] + offsetY);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0] + offsetX, points
+[i][1] + offsetY);
+                      }
+                      this.ctx.stroke();
+                      
+                      // 杩炴帴绾匡紙渚ч潰鏁堟灉锛?
+                      for (let i = 0; i < points.length; i++) {
+                          this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+                          this.ctx.lineWidth = 1;
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(points[i][0], points[i][1]);
+                          this.ctx.lineTo(points[i][0] + offsetX, points
+[i][1] + offsetY);
+                          this.ctx.stroke();
+                      }
+                  }
+              }
+  
+              // 3D娓叉煋鍦拌矊锛堣崏鍧€佹．鏋楃瓑锛?
+              drawLandscape3D(points, tags, wayId) {
+                  if (!this.threeDSettings.showLandscape || points.lengt
+h < 3) return;
+                  
+                  const landuse = tags.landuse;
+                  const natural = tags.natural;
+                  const leisure = tags.leisure;
+                  
+                  let landscapeColor = null;
+                  let landscapeHeight = 0.5; // 榛樿鍦拌矊楂樺害
+                  
+                  if (landuse === 'grass' || leisure === 'park' || leisu
+re === 'garden') {
+                      landscapeColor = '#90EE90'; // 娴呯豢鑹茶崏鍧?
+                  } else if (natural === 'forest' || natural === 'wood' 
+|| landuse === 'forest') {
+                      landscapeColor = '#228B22'; // 妫灄缁?
+                      landscapeHeight = 8; // 妫灄楂樹竴浜?
+                  } else if (landuse === 'farmland' || landuse === 'mead
+ow') {
+                      landscapeColor = '#ADFF2F'; // 鍐滅敯缁?
+                  } else if (natural === 'water' || landuse === 'reservo
+ir') {
+                      landscapeColor = '#4169E1'; // 姘翠綋钃?
+                      landscapeHeight = -0.5; // 姘撮潰绋嶄綆
+                  } else if (landuse === 'residential') {
+                      landscapeColor = '#FFE4B5'; // 浣忓畢鍖?
+                  } else if (landuse === 'commercial') {
+                      landscapeColor = '#DDA0DD'; // 鍟嗕笟鍖?
+                  } else if (landuse === 'industrial') {
+                      landscapeColor = '#D3D3D3'; // 宸ヤ笟鍖?
+                  }
+                  
+                  if (!landscapeColor) return;
+                  
+                  const scaledHeight = landscapeHeight * this.threeDSett
+ings.heightScale;
+                  const viewAngleRad = this.threeDSettings.viewAngle * M
+ath.PI / 180;
+                  const rotationRad = this.threeDSettings.rotationAngle 
+* Math.PI / 180;
+                  const heightPixels = scaledHeight * this.scale / this.
+metersPerDegreeLat;
+                  
+                  const offsetX = heightPixels * Math.cos(viewAngleRad) 
+* Math.cos(rotationRad) * 0.6;
+                  const offsetY = -heightPixels * Math.sin(viewAngleRad)
+ * 0.6 + heightPixels * Math.cos(viewAngleRad) * Math.sin(rotationRad) *
+ 0.3;
+                  
+                  const topPoints = points.map(([x, y]) => [x + offsetX,
+ y + offsetY]);
+                  const isSelected = this.selectedWays.has(wayId);
+                  
+                  // 缁樺埗搴曢潰
+                  this.ctx.fillStyle = isSelected ? '#FFFF00' : landscap
+eColor;
+                  this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+                  this.ctx.lineWidth = 1;
+                  this.ctx.beginPath();
+                  this.ctx.moveTo(points[0][0], points[0][1]);
+                  for (let i = 1; i < points.length; i++) {
+                      this.ctx.lineTo(points[i][0], points[i][1]);
+                  }
+                  this.ctx.closePath();
+                  this.ctx.fill();
+                  this.ctx.stroke();
+                  
+                  // 鍙湁楂樺害澶т簬0鎵嶇粯鍒朵晶闈㈠拰椤堕潰
+                  if (landscapeHeight > 0) {
+                      // 缁樺埗渚ч潰
+                      for (let i = 0; i < points.length - 1; i++) {
+                          const [x1, y1] = points[i];
+                          const [x2, y2] = points[i + 1];
+                          const [tx1, ty1] = topPoints[i];
+                          const [tx2, ty2] = topPoints[i + 1];
+                          
+                          const rgb = this.hexToRgb(landscapeColor);
+                          let sideColor = landscapeColor;
+                          if (rgb) {
+                              const r = Math.round(rgb.r * 0.8);
+                              const g = Math.round(rgb.g * 0.8);
+                              const b = Math.round(rgb.b * 0.8);
+                              sideColor = `rgb(${r}, ${g}, ${b})`;
+                          }
+                          
+                          this.ctx.fillStyle = isSelected ? '#FFFF00' : 
+sideColor;
+                          this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+                          this.ctx.lineWidth = 1;
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(x1, y1);
+                          this.ctx.lineTo(x2, y2);
+                          this.ctx.lineTo(tx2, ty2);
+                          this.ctx.lineTo(tx1, ty1);
+                          this.ctx.closePath();
+                          this.ctx.fill();
+                          this.ctx.stroke();
+                      }
+                      
+                      // 缁樺埗椤堕潰
+                      const rgb = this.hexToRgb(landscapeColor);
+                      let topColor = landscapeColor;
+                      if (rgb) {
+                          const r = Math.min(255, Math.round(rgb.r * 1.1
+));
+                          const g = Math.min(255, Math.round(rgb.g * 1.1
+));
+                          const b = Math.min(255, Math.round(rgb.b * 1.1
+));
+                          topColor = `rgb(${r}, ${g}, ${b})`;
+                      }
+                      
+                      this.ctx.fillStyle = isSelected ? '#FFFF00' : topC
+olor;
+                      this.ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+                      this.ctx.lineWidth = 1;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(topPoints[0][0], topPoints[0][1]);
+                      for (let i = 1; i < topPoints.length; i++) {
+                          this.ctx.lineTo(topPoints[i][0], topPoints[i][
+1]);
+                      }
+                      this.ctx.closePath();
+                      this.ctx.fill();
+                      this.ctx.stroke();
+                  }
+                  
+                  // 缁樺埗鍦拌矊鏍囩
+                  if (this.threeDSettings.show3DLabels && tags.name) {
+                      const centerX = topPoints.reduce((sum, p) => sum +
+ p[0], 0) / topPoints.length;
+                      const centerY = topPoints.reduce((sum, p) => sum +
+ p[1], 0) / topPoints.length;
+                      
+                      this.ctx.fillStyle = 'white';
+                      this.ctx.strokeStyle = 'black';
+                      this.ctx.lineWidth = 1;
+                      this.ctx.font = 'bold 8px Arial';
+                      this.ctx.textAlign = 'center';
+                      this.ctx.textBaseline = 'middle';
+                      
+                      const nameLabel = this.getNameLabel(tags.name);
+                      const textWidth = this.ctx.measureText(nameLabel).
+width;
+                      this.ctx.fillRect(centerX - textWidth/2 - 2, cente
+rY - 5, textWidth + 4, 10);
+                      this.ctx.strokeRect(centerX - textWidth/2 - 2, cen
+terY - 5, textWidth + 4, 10);
+                      
+                      this.ctx.fillStyle = 'black';
+                      this.ctx.fillText(nameLabel, centerX, centerY);
+                  }
+              }
+  
+              hexToRgb(hex) {
+                  // 纭繚杈撳叆鏄瓧绗︿覆
+                  if (!hex || typeof hex !== 'string') {
+                      return null;
+                  }
+                  
+                  // 绉婚櫎 # 绗﹀彿
+                  hex = hex.replace('#', '');
+                  
+                  // 澶勭悊3浣峢ex鏍煎紡 (渚嬪: abc -> aabbcc)
+                  if (hex.length === 3) {
+                      hex = hex.split('').map(c => c + c).join('');
+                  }
+                  
+                  // 楠岃瘉鏄惁涓烘湁鏁堢殑6浣峢ex
+                  if (hex.length !== 6 || !/^[0-9A-Fa-f]{6}$/.test(hex))
+ {
+                      console.warn('Invalid hex color:', hex);
+                      return null;
+                  }
+                  
+                  const r = parseInt(hex.substr(0, 2), 16);
+                  const g = parseInt(hex.substr(2, 2), 16);
+                  const b = parseInt(hex.substr(4, 2), 16);
+                  
+                  return { r, g, b };
+              }
+  
+              show3DSettings() {
+                  const dialog = this.createDialog('3D璁剧疆', 500, 500);
+                  
+                  dialog.innerHTML = `
+                      <h3>3D瑙嗗浘璁剧疆</h3>
+                      
+                      <div class="form-row">
+                          <label>淇瑙掑害:</label>
+                          <input type="range" id="viewAngleInput" min="0
+" max="90" value="${this.threeDSettings.viewAngle}" step="1">
+                          <span id="viewAngleValue">${this.threeDSetting
+s.viewAngle}掳</span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>姘村钩鏃嬭浆:</label>
+                          <input type="range" id="rotationAngleInput" mi
+n="0" max="360" value="${this.threeDSettings.rotationAngle}" step="1">
+                          <span id="rotationAngleValue">${this.threeDSet
+tings.rotationAngle}掳</span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>楂樺害缂╂斁:</label>
+                          <input type="range" id="heightScaleInput" min=
+"0.1" max="5" value="${this.threeDSettings.heightScale}" step="0.1">
+                          <span id="heightScaleValue">${this.threeDSetti
+ngs.heightScale}x</span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>鍏夌収瑙掑害:</label>
+                          <input type="range" id="lightAngleInput" min="
+0" max="360" value="${this.threeDSettings.lightAngle}" step="15">
+                          <span id="lightAngleValue">${this.threeDSettin
+gs.lightAngle}掳</span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>闃村奖寮哄害:</label>
+                          <input type="range" id="shadowIntensityInput" 
+min="0" max="1" value="${this.threeDSettings.shadowIntensity}" step="0.1
+">
+                          <span id="shadowIntensityValue">${this.threeDS
+ettings.shadowIntensity}</span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>榛樿楂樺害:</label>
+                          <input type="number" id="defaultHeightInput" v
+alue="${this.threeDSettings.defaultHeight}" min="1" max="1000">
+                          <span>绫?/span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>澧欓潰棰滆壊寮哄害:</label>
+                          <input type="range" id="wallColorIntensityInpu
+t" min="0.3" max="1" value="${this.threeDSettings.wallColorIntensity}" s
+tep="0.1">
+                          <span id="wallColorIntensityValue">${this.thre
+eDSettings.wallColorIntensity}</span>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>榛樿寤虹瓚棰滆壊:</label>
+                          <input type="color" id="defaultBuildingColorIn
+put" value="${this.threeDSettings.defaultBuildingColor}">
+                          <div class="color-preview" style="background-c
+olor: ${this.threeDSettings.defaultBuildingColor}"></div>
+                      </div>
+                      
+                      <div class="form-row">
+                          <input type="checkbox" id="show3DLabelsInput" 
+${this.threeDSettings.show3DLabels ? 'checked' : ''}>
+                          <label for="show3DLabelsInput">鏄剧ず3D鏍囩</label
+>
+                      </div>
+                      
+                      <div class="form-row">
+                          <input type="checkbox" id="showLandscapeInput"
+ ${this.threeDSettings.showLandscape ? 'checked' : ''}>
+                          <label for="showLandscapeInput">鏄剧ず鍦拌矊</label>
+                      </div>
+                      
+                      <div class="dialog-buttons">
+                          <button onclick="editor.apply3DSettings()">纭畾
+</button>
+                          <button onclick="editor.reset3DSettings()">閲嶇疆
+</button>
+                          <button onclick="editor.closeDialog()">鍙栨秷</bu
+tton>
+                      </div>
+                  `;
+                  
+                  // 缁戝畾婊戝潡鏇存柊浜嬩欢
+                  const sliders = [
+                      'viewAngleInput', 'rotationAngleInput', 'heightSca
+leInput', 'lightAngleInput', 
+                      'shadowIntensityInput', 'wallColorIntensityInput'
+                  ];
+                  
+                  sliders.forEach(sliderId => {
+                      const slider = document.getElementById(sliderId);
+                      const valueSpan = document.getElementById(sliderId
+.replace('Input', 'Value'));
+                      
+                      slider.addEventListener('input', () => {
+                          let value = parseFloat(slider.value);
+                          let displayValue = value;
+                          
+                          if (sliderId.includes('Angle')) {
+                              displayValue = value + '掳';
+                          } else if (sliderId === 'heightScaleInput') {
+                              displayValue = value + 'x';
+                          }
+                          
+                          valueSpan.textContent = displayValue;
+                          this.preview3DSettings();
+                      });
+                  });
+                  
+                  // 棰滆壊閫夋嫨鍣ㄤ簨浠?
+                  document.getElementById('defaultBuildingColorInput').a
+ddEventListener('change', () => {
+                      this.preview3DSettings();
+                  });
+                  
+                  // 澶嶉€夋浜嬩欢
+                  ['show3DLabelsInput', 'showLandscapeInput'].forEach(ch
+eckboxId => {
+                      document.getElementById(checkboxId).addEventListen
+er('change', () => {
+                          this.preview3DSettings();
+                      });
+                  });
+              }
+  
+              preview3DSettings() {
+                  this.threeDSettings.viewAngle = parseFloat(document.ge
+tElementById('viewAngleInput').value);
+                  this.threeDSettings.rotationAngle = parseFloat(documen
+t.getElementById('rotationAngleInput').value);
+                  this.threeDSettings.heightScale = parseFloat(document.
+getElementById('heightScaleInput').value);
+                  this.threeDSettings.lightAngle = parseFloat(document.g
+etElementById('lightAngleInput').value);
+                  this.threeDSettings.shadowIntensity = parseFloat(docum
+ent.getElementById('shadowIntensityInput').value);
+                  this.threeDSettings.wallColorIntensity = parseFloat(do
+cument.getElementById('wallColorIntensityInput').value);
+                  this.threeDSettings.defaultBuildingColor = document.ge
+tElementById('defaultBuildingColorInput').value;
+                  this.threeDSettings.show3DLabels = document.getElement
+ById('show3DLabelsInput').checked;
+                  this.threeDSettings.showLandscape = document.getElemen
+tById('showLandscapeInput').checked;
+                  
+                  // 鏇存柊宸ュ叿鏍忔粦鍧?
+                  document.getElementById('viewAngleSlider').value = thi
+s.threeDSettings.viewAngle;
+                  document.getElementById('rotationAngleSlider').value =
+ this.threeDSettings.rotationAngle;
+                  document.getElementById('heightScaleSlider').value = t
+his.threeDSettings.heightScale;
+                  
+                  // 鏇存柊澶嶉€夋
+                  document.getElementById('show3DLabelsCheck').checked =
+ this.threeDSettings.show3DLabels;
+                  document.getElementById('showLandscapeCheck').checked 
+= this.threeDSettings.showLandscape;
+                  
+                  this.redraw();
+              }
+  
+              apply3DSettings() {
+                  this.threeDSettings.viewAngle = parseFloat(document.ge
+tElementById('viewAngleInput').value);
+                  this.threeDSettings.rotationAngle = parseFloat(documen
+t.getElementById('rotationAngleInput').value);
+                  this.threeDSettings.heightScale = parseFloat(document.
+getElementById('heightScaleInput').value);
+                  this.threeDSettings.lightAngle = parseFloat(document.g
+etElementById('lightAngleInput').value);
+                  this.threeDSettings.shadowIntensity = parseFloat(docum
+ent.getElementById('shadowIntensityInput').value);
+                  this.threeDSettings.defaultHeight = parseFloat(documen
+t.getElementById('defaultHeightInput').value);
+                  this.threeDSettings.wallColorIntensity = parseFloat(do
+cument.getElementById('wallColorIntensityInput').value);
+                  this.threeDSettings.defaultBuildingColor = document.ge
+tElementById('defaultBuildingColorInput').value;
+                  this.threeDSettings.show3DLabels = document.getElement
+ById('show3DLabelsInput').checked;
+                  this.threeDSettings.showLandscape = document.getElemen
+tById('showLandscapeInput').checked;
+                  
+                  // 鏇存柊宸ュ叿鏍?
+                  document.getElementById('viewAngleSlider').value = thi
+s.threeDSettings.viewAngle;
+                  document.getElementById('rotationAngleSlider').value =
+ this.threeDSettings.rotationAngle;
+                  document.getElementById('heightScaleSlider').value = t
+his.threeDSettings.heightScale;
+                  document.getElementById('show3DLabelsCheck').checked =
+ this.threeDSettings.show3DLabels;
+                  document.getElementById('showLandscapeCheck').checked 
+= this.threeDSettings.showLandscape;
+                  
+                  this.redraw();
+                  this.closeDialog();
+              }
+  
+              reset3DSettings() {
+                  this.threeDSettings = new ThreeDSettings();
+                  document.getElementById('viewAngleSlider').value = thi
+s.threeDSettings.viewAngle;
+                  document.getElementById('rotationAngleSlider').value =
+ this.threeDSettings.rotationAngle;
+                  document.getElementById('heightScaleSlider').value = t
+his.threeDSettings.heightScale;
+                  document.getElementById('show3DLabelsCheck').checked =
+ this.threeDSettings.show3DLabels;
+                  document.getElementById('showLandscapeCheck').checked 
+= this.threeDSettings.showLandscape;
+                  this.redraw();
+                  this.closeDialog();
+              }
+  
+              editBuildingHeight() {
+                  if (this.selectedWay) {
+                      const way = this.ways.get(this.selectedWay);
+                      const tags = way.tags || {};
+                      
+                      if (!tags.building) {
+                          alert("閫変腑鐨勫璞′笉鏄缓绛戠墿锛?);
+                          return;
+                      }
+                      
+                      const currentHeight = this.getBuildingHeight(tags)
+;
+                      const newHeight = prompt(`璇疯緭鍏ュ缓绛戦珮搴?绫?锛屽綋鍓? ${cur
+rentHeight}m:`, currentHeight);
+                      
+                      if (newHeight !== null && !isNaN(parseFloat(newHei
+ght))) {
+                          const oldTags = structuredClone(tags);
+                          const newTags = structuredClone(tags);
+                          newTags.height = parseFloat(newHeight).toStrin
+g();
+                          
+                          const command = new ModifyTagsCommand(this, 'w
+ay', this.selectedWay, oldTags, newTags);
+                          this.executeCommand(command);
+                          
+                          this.redraw();
+                          this.updateSelectionInfo();
+                      }
+                  } else if (this.selectedWays.size > 0) {
+                      const height = prompt("璇疯緭鍏ュ缓绛戦珮搴?绫?:");
+                      if (height !== null && !isNaN(parseFloat(height)))
+ {
+                          for (const wayId of this.selectedWays) {
+                              const way = this.ways.get(wayId);
+                              const tags = way.tags || {};
+                              
+                              if (tags.building) {
+                                  const oldTags = structuredClone(tags);
+                                  const newTags = structuredClone(tags);
+                                  newTags.height = parseFloat(height).to
+String();
+                                  
+                                  const command = new ModifyTagsCommand(
+this, 'way', wayId, oldTags, newTags);
+                                  this.executeCommand(command);
+                              }
+                          }
+                          
+                          this.redraw();
+                          this.updateSelectionInfo();
+                      }
+                  } else {
+                      alert("璇峰厛閫夋嫨涓€涓垨澶氫釜寤虹瓚鐗╋紒");
+                  }
+              }
+  
+              editBuildingColor() {
+                  if (this.selectedWay) {
+                      const way = this.ways.get(this.selectedWay);
+                      const tags = way.tags || {};
+                      
+                      if (!tags.building) {
+                          alert("閫変腑鐨勫璞′笉鏄缓绛戠墿锛?);
+                          return;
+                      }
+                      
+                      // 纭繚棰滆壊鏍煎紡姝ｇ‘
+                      const currentColor = this.getBuildingColor(tags);
+                      const hexColor = this.ensureHexColor(currentColor)
+;
+                      
+                      // 鍒涘缓瀵硅瘽妗嗚€屼笉鏄畝鍗曠殑鏂囦欢閫夋嫨鍣?
+                      this.showColorPickerDialog('鍗曚釜寤虹瓚', hexColor, (ne
+wColor) => {
+                          const oldTags = structuredClone(tags);
+                          const newTags = structuredClone(tags);
+                          newTags['building:colour'] = newColor;
+                          
+                          const command = new ModifyTagsCommand(this, 'w
+ay', this.selectedWay, oldTags, newTags);
+                          this.executeCommand(command);
+                          
+                          this.redraw();
+                          this.updateSelectionInfo();
+                      });
+                      
+                  } else if (this.selectedWays.size > 0) {
+                      const hexColor = this.ensureHexColor(this.threeDSe
+ttings.defaultBuildingColor);
+                      
+                      this.showColorPickerDialog('澶氫釜寤虹瓚', hexColor, (ne
+wColor) => {
+                          for (const wayId of this.selectedWays) {
+                              const way = this.ways.get(wayId);
+                              const tags = way.tags || {};
+                              
+                              if (tags.building) {
+                                  const oldTags = structuredClone(tags);
+                                  const newTags = structuredClone(tags);
+                                  newTags['building:colour'] = newColor;
+                                  
+                                  const command = new ModifyTagsCommand(
+this, 'way', wayId, oldTags, newTags);
+                                  this.executeCommand(command);
+                              }
+                          }
+                          
+                          this.redraw();
+                          this.updateSelectionInfo();
+                      });
+                  } else {
+                      alert("璇峰厛閫夋嫨涓€涓垨澶氫釜寤虹瓚鐗╋紒");
+                  }
+              }
+  
+              showColorPickerDialog(title, currentColor, onColorChange) 
+{
+                  const dialog = this.createDialog(`缂栬緫${title}棰滆壊`, 350
+, 250);
+                  
+                  dialog.innerHTML = `
+                      <h3>缂栬緫${title}棰滆壊</h3>
+                      
+                      <div class="form-row">
+                          <label>褰撳墠棰滆壊:</label>
+                          <div class="color-preview" id="currentColorPre
+view" style="background-color: ${currentColor}; width: 60px; height: 30p
+x; border: 2px solid #000; display: inline-block;"></div>
+                          <span id="currentColorText">${currentColor}</s
+pan>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>閫夋嫨鏂伴鑹?</label>
+                          <input type="color" id="colorPicker" value="${
+currentColor}" style="width: 60px; height: 30px;">
+                          <input type="text" id="colorText" value="${cur
+rentColor}" style="width: 80px; margin-left: 10px;" placeholder="#RRGGBB
+">
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>棰勮棰滆壊:</label>
+                      </div>
+                      <div class="form-row">
+                          <div style="display: flex; gap: 5px; flex-wrap
+: wrap;">
+                              <div class="color-preset" style="backgroun
+d-color: #F0F0F0; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="娴呯伆" data-color="#F0F0F0"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #8B4513; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="妫曡壊" data-color="#8B4513"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #DC143C; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="绾㈣壊" data-color="#DC143C"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #FF8C00; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="姗欒壊" data-color="#FF8C00"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #FFD700; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="閲戣壊" data-color="#FFD700"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #32CD32; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="缁胯壊" data-color="#32CD32"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #4169E1; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="钃濊壊" data-color="#4169E1"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #8A2BE2; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="绱壊" data-color="#8A2BE2"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #A0A0A0; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="鐏拌壊" data-color="#A0A0A0"></div>
+                              <div class="color-preset" style="backgroun
+d-color: #2F4F4F; width: 25px; height: 25px; border: 1px solid #000; cur
+sor: pointer;" title="娣辩伆" data-color="#2F4F4F"></div>
+                          </div>
+                      </div>
+                      
+                      <div class="dialog-buttons">
+                          <button onclick="editor.applyColorChange('${cu
+rrentColor}')">纭畾</button>
+                          <button onclick="editor.closeDialog()">鍙栨秷</bu
+tton>
+                      </div>
+                  `;
+                  
+                  // 淇濆瓨鍥炶皟鍑芥暟
+                  this.colorChangeCallback = onColorChange;
+                  
+                  // 缁戝畾棰滆壊閫夋嫨鍣ㄤ簨浠?
+                  const colorPicker = document.getElementById('colorPick
+er');
+                  const colorText = document.getElementById('colorText')
+;
+                  const currentColorPreview = document.getElementById('c
+urrentColorPreview');
+                  const currentColorText = document.getElementById('curr
+entColorText');
+                  
+                  const updateColor = (color) => {
+                      const hexColor = this.ensureHexColor(color);
+                      colorPicker.value = hexColor;
+                      colorText.value = hexColor;
+                      currentColorPreview.style.backgroundColor = hexCol
+or;
+                      currentColorText.textContent = hexColor;
+                  };
+                  
+                  colorPicker.addEventListener('change', (e) => updateCo
+lor(e.target.value));
+                  colorText.addEventListener('change', (e) => updateColo
+r(e.target.value));
+                  colorText.addEventListener('keyup', (e) => {
+                      if (e.target.value.match(/^#[0-9A-Fa-f]{6}$/)) {
+                          updateColor(e.target.value);
+                      }
+                  });
+                  
+                  // 缁戝畾棰勮棰滆壊鐐瑰嚮浜嬩欢
+                  const presetColors = dialog.querySelectorAll('.color-p
+reset');
+                  presetColors.forEach(preset => {
+                      preset.addEventListener('click', () => {
+                          updateColor(preset.dataset.color);
+                      });
+                  });
+              }
+  
+              applyColorChange(originalColor) {
+                  const colorText = document.getElementById('colorText')
+;
+                  const newColor = colorText.value;
+                  
+                  if (!newColor.match(/^#[0-9A-Fa-f]{6}$/)) {
+                      alert('璇疯緭鍏ユ湁鏁堢殑棰滆壊鏍煎紡 (渚嬪: #FF0000)');
+                      return;
+                  }
+                  
+                  if (this.colorChangeCallback) {
+                      this.colorChangeCallback(newColor);
+                  }
+                  
+                  this.closeDialog();
+              }
+  
+              ensureHexColor(color) {
+                  if (!color || color === 'transparent') {
+                      return this.threeDSettings.defaultBuildingColor;
+                  }
+                  
+                  // 濡傛灉宸茬粡鏄痟ex鏍煎紡锛岀洿鎺ヨ繑鍥?
+                  if (color.match(/^#[0-9A-Fa-f]{6}$/)) {
+                      return color;
+                  }
+                  
+                  // 澶勭悊涓€浜涘父瑙佺殑棰滆壊鍚嶇О
+                  const colorNames = {
+                      'red': '#FF0000',
+                      'green': '#00FF00',
+                      'blue': '#0000FF',
+                      'yellow': '#FFFF00',
+                      'orange': '#FFA500',
+                      'purple': '#800080',
+                      'brown': '#A52A2A',
+                      'pink': '#FFC0CB',
+                      'gray': '#808080',
+                      'grey': '#808080',
+                      'black': '#000000',
+                      'white': '#FFFFFF'
+                  };
+                  
+                  const lowerColor = color.toLowerCase();
+                  if (colorNames[lowerColor]) {
+                      return colorNames[lowerColor];
+                  }
+                  
+                  // 澶勭悊rgb鏍煎紡
+                  const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(
+\d+)\)/);
+                  if (rgbMatch) {
+                      const r = parseInt(rgbMatch[1]).toString(16).padSt
+art(2, '0');
+                      const g = parseInt(rgbMatch[2]).toString(16).padSt
+art(2, '0');
+                      const b = parseInt(rgbMatch[3]).toString(16).padSt
+art(2, '0');
+                      return `#${r}${g}${b}`.toUpperCase();
+                  }
+                  
+                  // 濡傛灉鏃犳硶杞崲锛岃繑鍥為粯璁ら鑹?
+                  return this.threeDSettings.defaultBuildingColor;
+              }
+  
+              randomizeBuildingHeights() {
+                  if (confirm("纭畾瑕佷负鎵€鏈夊缓绛戠墿闅忔満鍒嗛厤楂樺害鍚楋紵")) {
+                      for (const [wayId, wayData] of this.ways) {
+                          const tags = wayData.tags || {};
+                          if (tags.building) {
+                              const minHeight = 5;
+                              const maxHeight = 50;
+                              const randomHeight = Math.random() * (maxH
+eight - minHeight) + minHeight;
+                              
+                              const oldTags = structuredClone(tags);
+                              const newTags = structuredClone(tags);
+                              newTags.height = randomHeight.toFixed(1);
+                              
+                              const command = new ModifyTagsCommand(this
+, 'way', wayId, oldTags, newTags);
+                              this.executeCommand(command);
+                          }
+                      }
+                      
+                      this.redraw();
+                      alert("寤虹瓚鐗╅珮搴﹀凡闅忔満鍒嗛厤锛?);
+                  }
+              }
+  
+              clearBuildingHeights() {
+                  if (confirm("纭畾瑕佹竻闄ゆ墍鏈夊缓绛戠墿鐨勯珮搴︽暟鎹悧锛?)) {
+                      for (const [wayId, wayData] of this.ways) {
+                          const tags = wayData.tags || {};
+                          if (tags.building && (tags.height || tags.leve
+ls || tags['building:levels'] || tags['building:height'])) {
+                              const oldTags = structuredClone(tags);
+                              const newTags = structuredClone(tags);
+                              
+                              delete newTags.height;
+                              delete newTags.levels;
+                              delete newTags['building:levels'];
+                              delete newTags['building:height'];
+                              
+                              const command = new ModifyTagsCommand(this
+, 'way', wayId, oldTags, newTags);
+                              this.executeCommand(command);
+                          }
+                      }
+                      
+                      this.redraw();
+                      alert("寤虹瓚鐗╅珮搴︽暟鎹凡娓呴櫎锛?);
+                  }
+              }
+  
+              onClick(event) {
+                  const rect = this.canvas.getBoundingClientRect();
+                  const canvasX = event.clientX - rect.left;
+                  const canvasY = event.clientY - rect.top;
+                  const [worldX, worldY] = this.canvasToWorld(canvasX, c
+anvasY);
+                  
+                  const shiftPressed = event.shiftKey;
+                  const ctrlPressed = event.ctrlKey;
+                  
+                  let adjustedX = worldX;
+                  let adjustedY = worldY;
+                  if (this.gridSettings.snapToGrid) {
+                      [adjustedX, adjustedY] = this.snapToGrid(worldX, w
+orldY);
+                  }
+                  
+                  if (this.mode === "select") {
+                      this.handleSelect(canvasX, canvasY, shiftPressed, 
+ctrlPressed);
+                  } else if (this.mode === "box_select") {
+                      this.startBoxSelect(canvasX, canvasY);
+                  } else if (this.mode === "add_node") {
+                      this.addNode(adjustedX, adjustedY);
+                  } else if (this.mode === "add_way") {
+                      this.handleWayCreation(canvasX, canvasY);
+                  } else if (this.mode === "add_polygon") {
+                      this.handlePolygonCreation(canvasX, canvasY);
+                  } else if (this.mode === "measure") {
+                      this.addMeasurePoint(worldX, worldY);
+                  }
+                  
+                  this.dragStart = [canvasX, canvasY];
+                  
+                  if (this.selectedNode && this.nodes.has(this.selectedN
+ode)) {
+                      this.draggingNode = true;
+                      const node = this.nodes.get(this.selectedNode);
+                      this.nodeStartPos = [node.lon, node.lat];
+                  }
+              }
+  
+              onRightClick(event) {
+                  if (this.mode === "add_way" || this.mode === "add_poly
+gon") {
+                      if (this.creatingWay.length > 0) {
+                          this.finishCreation();
+                      }
+                  }
+              }
+  
+              onMouseMove(event) {
+                  const rect = this.canvas.getBoundingClientRect();
+                  const canvasX = event.clientX - rect.left;
+                  const canvasY = event.clientY - rect.top;
+                  const [worldX, worldY] = this.canvasToWorld(canvasX, c
+anvasY);
+                  
+                  this.updateCoordinateDisplay(worldX, worldY);
+                  
+                  if (this.dragStart) {
+                      const dx = canvasX - this.dragStart[0];
+                      const dy = canvasY - this.dragStart[1];
+                      
+                      if (this.mode === "box_select") {
+                          this.updateBoxSelect(canvasX, canvasY);
+                      } else if (this.mode === "select" && this.selected
+Node && this.draggingNode) {
+                          this.moveSelectedNode(dx, dy);
+                      } else if (this.mode === "select" && !this.selecte
+dNode) {
+                          this.centerX -= dx / this.scale;
+                          this.centerY += dy / this.scale;
+                          this.redraw();
+                      }
+                      
+                      this.dragStart = [canvasX, canvasY];
+                  }
+              }
+  
+              onRelease(event) {
+                  const rect = this.canvas.getBoundingClientRect();
+                  const canvasX = event.clientX - rect.left;
+                  const canvasY = event.clientY - rect.top;
+                  const shiftPressed = event.shiftKey;
+                  const ctrlPressed = event.ctrlKey;
+                  
+                  if (this.mode === "box_select" && this.boxSelecting) {
+                      this.finishBoxSelect(canvasX, canvasY, shiftPresse
+d, ctrlPressed);
+                  }
+                  
+                  if (this.draggingNode && this.selectedNode && this.nod
+eStartPos) {
+                      const node = this.nodes.get(this.selectedNode);
+                      const endPos = [node.lon, node.lat];
+                      
+                      if (Math.abs(endPos[0] - this.nodeStartPos[0]) > 1
+e-8 || 
+                          Math.abs(endPos[1] - this.nodeStartPos[1]) > 1
+e-8) {
+                          const command = new MoveNodeCommand(this, this
+.selectedNode, this.nodeStartPos, endPos);
+                          this.undoStack.push(command);
+                          this.redoStack = [];
+                          this.updateUndoRedoButtons();
+                      }
+                  }
+                  
+                  this.dragStart = null;
+                  this.draggingNode = false;
+                  this.nodeStartPos = null;
+              }
+  
+              onScroll(event) {
+                  event.preventDefault();
+                  const factor = event.deltaY > 0 ? 0.9 : 1.1;
+                  this.scale *= factor;
+                  this.scale = Math.max(1000, Math.min(1000000, this.sca
+le));
+                  this.redraw();
+                  this.updateViewInfo();
+              }
+  
+              onDoubleClick(event) {
+                  console.log('Double click detected');
+              }
+  
+              onKey(event) {
+                  switch(event.key) {
+                      case 'Delete':
+                          this.deleteSelected();
+                          break;
+                      case 'r':
+                      case 'R':
+                          if (event.shiftKey) {
+                              this.rotateView(-15);
+                          } else {
+                              this.rotateView(15);
+                          }
+                          break;
+                      case 'Escape':
+                          if (this.mode === "measure") {
+                              this.clearMeasurement();
+                          } else {
+                              this.cancelCreation();
+                          }
+                          break;
+                      case 'Enter':
+                          if (this.creatingWay.length > 0) {
+                              this.finishCreation();
+                          }
+                          break;
+                      case 'e':
+                      case 'E':
+                          this.editTags();
+                          break;
+                      case 'g':
+                      case 'G':
+                          document.getElementById('gridCheck').checked =
+ !document.getElementById('gridCheck').checked;
+                          this.toggleGrid();
+                          break;
+                      case 'm':
+                      case 'M':
+                          this.clearMeasurement();
+                          break;
+                      case 'c':
+                      case 'C':
+                          if (this.renderMode === '3d') {
+                              this.editBuildingColor();
+                          } else {
+                              const coordSelect = document.getElementByI
+d('coordSelect');
+                              coordSelect.value = coordSelect.value === 
+'geographic' ? 'scene' : 'geographic';
+                              this.onCoordSystemChange();
+                          }
+                          break;
+                      case 'h':
+                      case 'H':
+                          if (this.renderMode === '3d') {
+                              this.editBuildingHeight();
+                          }
+                          break;
+                  }
+                  
+                  if (event.ctrlKey && event.key === 'z') {
+                      this.undo();
+                  }
+                  
+                  if (event.ctrlKey && event.key === 'y') {
+                      this.redo();
+                  }
+                  
+                  if (event.ctrlKey && event.key === 'a') {
+                      event.preventDefault();
+                      this.selectAllPolygons();
+                  }
+              }
+  
+              canvasToWorld(canvasX, canvasY) {
+                  const centerCanvasX = this.canvas.width / 2;
+                  const centerCanvasY = this.canvas.height / 2;
+                  
+                  const relX = canvasX - centerCanvasX;
+                  const relY = canvasY - centerCanvasY;
+                  
+                  const rad = -this.rotation * Math.PI / 180;
+                  const cosR = Math.cos(rad);
+                  const sinR = Math.sin(rad);
+                  
+                  const rotatedX = relX * cosR - relY * sinR;
+                  const rotatedY = relX * sinR + relY * cosR;
+                  
+                  const worldX = this.centerX + rotatedX / this.scale;
+                  const worldY = this.centerY - rotatedY / this.scale;
+                  
+                  return [worldX, worldY];
+              }
+  
+              worldToCanvas(worldX, worldY) {
+                  const relX = (worldX - this.centerX) * this.scale;
+                  const relY = -(worldY - this.centerY) * this.scale;
+                  
+                  const rad = this.rotation * Math.PI / 180;
+                  const cosR = Math.cos(rad);
+                  const sinR = Math.sin(rad);
+                  
+                  const rotatedX = relX * cosR - relY * sinR;
+                  const rotatedY = relX * sinR + relY * cosR;
+                  
+                  const centerCanvasX = this.canvas.width / 2;
+                  const centerCanvasY = this.canvas.height / 2;
+                  
+                  const canvasX = centerCanvasX + rotatedX;
+                  const canvasY = centerCanvasY + rotatedY;
+                  
+                  return [canvasX, canvasY];
+              }
+  
+              snapToGrid(x, y) {
+                  const dx = x - this.gridSettings.originX;
+                  const dy = y - this.gridSettings.originY;
+                  
+                  const metersPerDegree = this.metersPerDegreeLat * Math
+.cos(y * Math.PI / 180);
+                  const dxMeters = dx * metersPerDegree;
+                  const dyMeters = dy * this.metersPerDegreeLat;
+                  
+                  const gridSize = this.gridSettings.gridSizeMeters;
+                  const snappedDxMeters = Math.round(dxMeters / gridSize
+) * gridSize;
+                  const snappedDyMeters = Math.round(dyMeters / gridSize
+) * gridSize;
+                  
+                  const snappedDx = snappedDxMeters / metersPerDegree;
+                  const snappedDy = snappedDyMeters / this.metersPerDegr
+eeLat;
+                  
+                  return [this.gridSettings.originX + snappedDx, this.gr
+idSettings.originY + snappedDy];
+              }
+  
+              updateCoordinateDisplay(worldX, worldY) {
+                  let coordText;
+                  if (this.coordSystem.coordType === "geographic") {
+                      coordText = `缁忓害: ${worldX.toFixed(6)}, 绾害: ${wor
+ldY.toFixed(6)}`;
+                  } else {
+                      const [sceneX, sceneY] = this.coordSystem.geograph
+icToScene(worldX, worldY);
+                      coordText = `X: ${sceneX.toFixed(2)}m, Y: ${sceneY
+.toFixed(2)}m`;
+                  }
+                  
+                  document.getElementById('coordLabel').textContent = co
+ordText;
+                  
+                  const metersPerDegree = this.metersPerDegreeLat * Math
+.cos(worldY * Math.PI / 180);
+                  const metersPerPixel = metersPerDegree / this.scale;
+                  const scaleRatio = Math.round(metersPerPixel);
+                  document.getElementById('scaleLabel').textContent = `1
+:${scaleRatio}`;
+              }
+  
+              updateCreateStatus() {
+                  let status = "鏃?;
+                  if (this.creatingWay.length > 0) {
+                      if (this.mode === "add_way") {
+                          status = `鍒涘缓璺緞: ${this.creatingWay.length}涓
+妭鐐筦;
+                      } else if (this.mode === "add_polygon") {
+                          status = `鍒涘缓澶氳竟褰? ${this.creatingWay.length}涓
+妭鐐筦;
+                      }
+                  } else if (this.mode === "measure") {
+                      if (this.measurePoints.length > 0) {
+                          status = `娴嬮噺: ${this.measurePoints.length}涓偣
+`;
+                      } else {
+                          status = "娴嬮噺妯″紡";
+                      }
+                  }
+                  document.getElementById('createStatusLabel').textConte
+nt = status;
+              }
+  
+              updateGridStatus() {
+                  const gridStatusLabel = document.getElementById('gridS
+tatusLabel');
+                  if (this.gridSettings.showGrid) {
+                      let status = `鏄剧ず ${this.gridSettings.gridSizeMete
+rs}m`;
+                      if (this.gridSettings.snapToGrid) {
+                          status += " (鍚搁檮)";
+                      }
+                      gridStatusLabel.textContent = status;
+                      gridStatusLabel.style.color = "green";
+                  } else {
+                      gridStatusLabel.textContent = "闅愯棌";
+                      gridStatusLabel.style.color = "gray";
+                  }
+              }
+  
+              updateMultiselectInfo() {
+                  const multiselectLabel = document.getElementById('mult
+iselectLabel');
+                  if (this.selectedWays.size > 0) {
+                      multiselectLabel.textContent = `宸查€夋嫨 ${this.selec
+tedWays.size} 涓杈瑰舰`;
+                      multiselectLabel.style.color = "green";
+                  } else {
+                      multiselectLabel.textContent = "鏈€夋嫨";
+                      multiselectLabel.style.color = "orange";
+                  }
+              }
+  
+              updateViewInfo() {
+                  const scaleFactor = this.scale / 100000;
+                  let viewInfo = `缂╂斁: ${scaleFactor.toFixed(2)}<br>鏃嬭浆:
+ ${this.rotation}掳`;
+                  
+                  if (this.coordSystem.coordType === "scene") {
+                      viewInfo += `<br>鍦烘櫙鍘熺偣: (${this.coordSystem.scene
+OriginLon.toFixed(3)}, ${this.coordSystem.sceneOriginLat.toFixed(3)})`;
+                  }
+                  
+                  if (this.renderMode === '3d') {
+                      viewInfo += `<br>3D淇: ${this.threeDSettings.view
+Angle}掳`;
+                      viewInfo += `<br>3D鏃嬭浆: ${this.threeDSettings.rota
+tionAngle}掳`;
+                      viewInfo += `<br>楂樺害缂╂斁: ${this.threeDSettings.hei
+ghtScale}x`;
+                  }
+                  
+                  document.getElementById('viewLabel').innerHTML = viewI
+nfo;
+              }
+  
+              redraw() {
+                  this.ctx.clearRect(0, 0, this.canvas.width, this.canva
+s.height);
+                  this.ctx.fillStyle = 'white';
+                  this.ctx.fillRect(0, 0, this.canvas.width, this.canvas
+.height);
+                  
+                  this.drawGrid();
+                  this.drawOSMData();
+                  this.drawCompass();
+                  this.drawBoxSelect();
+                  this.drawMeasurement();
+                  this.updateViewInfo();
+              }
+  
+              drawGrid() {
+                  if (!this.gridSettings.showGrid) return;
+                  
+                  const canvasWidth = this.canvas.width;
+                  const canvasHeight = this.canvas.height;
+                  
+                  const [originCanvasX, originCanvasY] = this.worldToCan
+vas(
+                      this.gridSettings.originX, this.gridSettings.origi
+nY);
+                  
+                  const metersPerDegree = this.metersPerDegreeLat * Math
+.cos(this.centerY * Math.PI / 180);
+                  const pixelsPerMeter = this.scale / metersPerDegree;
+                  let gridSpacing = this.gridSettings.gridSizeMeters * p
+ixelsPerMeter;
+                  
+                  if (gridSpacing < 10) {
+                      const multiplier = Math.max(1, Math.floor(20 / gri
+dSpacing));
+                      gridSpacing *= multiplier;
+                  } else if (gridSpacing > 300) {
+                      const divisor = Math.max(1, Math.floor(gridSpacing
+ / 100));
+                      gridSpacing /= divisor;
+                  }
+                  
+                  this.ctx.strokeStyle = this.gridSettings.gridColor;
+                  this.ctx.lineWidth = 1;
+                  
+                  // 缁樺埗鍨傜洿绾?
+                  let x = originCanvasX % gridSpacing;
+                  let lineCount = 0;
+                  while (x < canvasWidth && lineCount < 200) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(x, 0);
+                      this.ctx.lineTo(x, canvasHeight);
+                      this.ctx.stroke();
+                      x += gridSpacing;
+                      lineCount++;
+                  }
+                  
+                  x = originCanvasX % gridSpacing - gridSpacing;
+                  lineCount = 0;
+                  while (x >= 0 && lineCount < 200) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(x, 0);
+                      this.ctx.lineTo(x, canvasHeight);
+                      this.ctx.stroke();
+                      x -= gridSpacing;
+                      lineCount++;
+                  }
+                  
+                  // 缁樺埗姘村钩绾?
+                  let y = originCanvasY % gridSpacing;
+                  lineCount = 0;
+                  while (y < canvasHeight && lineCount < 200) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(0, y);
+                      this.ctx.lineTo(canvasWidth, y);
+                      this.ctx.stroke();
+                      y += gridSpacing;
+                      lineCount++;
+                  }
+                  
+                  y = originCanvasY % gridSpacing - gridSpacing;
+                  lineCount = 0;
+                  while (y >= 0 && lineCount < 200) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(0, y);
+                      this.ctx.lineTo(canvasWidth, y);
+                      this.ctx.stroke();
+                      y -= gridSpacing;
+                      lineCount++;
+                  }
+                  
+                  // 缁樺埗鍧愭爣杞?
+                  this.ctx.strokeStyle = this.gridSettings.axisColor;
+                  this.ctx.lineWidth = 2;
+                  
+                  if (0 <= originCanvasX && originCanvasX <= canvasWidth
+) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(originCanvasX, 0);
+                      this.ctx.lineTo(originCanvasX, canvasHeight);
+                      this.ctx.stroke();
+                  }
+                  
+                  if (0 <= originCanvasY && originCanvasY <= canvasHeigh
+t) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(0, originCanvasY);
+                      this.ctx.lineTo(canvasWidth, originCanvasY);
+                      this.ctx.stroke();
+                  }
+                  
+                  // 鍘熺偣鏍囪
+                  if (0 <= originCanvasX && originCanvasX <= canvasWidth
+ && 
+                      0 <= originCanvasY && originCanvasY <= canvasHeigh
+t) {
+                      this.ctx.fillStyle = this.gridSettings.axisColor;
+                      this.ctx.beginPath();
+                      this.ctx.arc(originCanvasX, originCanvasY, 5, 0, 2
+ * Math.PI);
+                      this.ctx.fill();
+                      
+                      if (this.gridSettings.showCoordinates) {
+                          let coordText;
+                          if (this.coordSystem.coordType === "geographic
+") {
+                              coordText = `(${this.gridSettings.originX.
+toFixed(3)},${this.gridSettings.originY.toFixed(3)})`;
+                          } else {
+                              const [sceneX, sceneY] = this.coordSystem.
+geographicToScene(
+                                  this.gridSettings.originX, this.gridSe
+ttings.originY);
+                              coordText = `(${sceneX.toFixed(1)}m,${scen
+eY.toFixed(1)}m)`;
+                          }
+                          
+                          this.ctx.fillStyle = this.gridSettings.axisCol
+or;
+                          this.ctx.font = '9px Arial';
+                          this.ctx.fillText(coordText, originCanvasX + 1
+5, originCanvasY - 15);
+                      }
+                  }
+              }
+  
+              drawCompass() {
+                  if (!document.getElementById('compassCheck').checked) 
+return;
+                  
+                  const compassX = this.canvas.width - this.compassSize 
+- 20;
+                  const compassY = 20 + this.compassSize / 2;
+                  const radius = this.compassSize / 2;
+                  
+                  this.ctx.strokeStyle = 'black';
+                  this.ctx.lineWidth = 2;
+                  this.ctx.fillStyle = 'white';
+                  this.ctx.beginPath();
+                  this.ctx.arc(compassX, compassY, radius, 0, 2 * Math.P
+I);
+                  this.ctx.fill();
+                  this.ctx.stroke();
+                  
+                  const directions = [
+                      [0, 'N'], [30, ''], [60, ''], [90, 'E'],
+                      [120, ''], [150, ''], [180, 'S'], [210, ''],
+                      [240, ''], [270, 'W'], [300, ''], [330, '']
+                  ];
+                  
+                  for (const [angle, label] of directions) {
+                      const screenAngle = (angle - 90) * Math.PI / 180;
+                      const x1 = compassX + (radius - 10) * Math.cos(scr
+eenAngle);
+                      const y1 = compassY + (radius - 10) * Math.sin(scr
+eenAngle);
+                      const x2 = compassX + radius * Math.cos(screenAngl
+e);
+                      const y2 = compassY + radius * Math.sin(screenAngl
+e);
+                      
+                      this.ctx.strokeStyle = 'black';
+                      this.ctx.lineWidth = label ? 2 : 1;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(x1, y1);
+                      this.ctx.lineTo(x2, y2);
+                      this.ctx.stroke();
+                      
+                      if (label) {
+                          const textX = compassX + (radius + 12) * Math.
+cos(screenAngle);
+                          const textY = compassY + (radius + 12) * Math.
+sin(screenAngle);
+                          this.ctx.fillStyle = 'black';
+                          this.ctx.font = 'bold 10px Arial';
+                          this.ctx.textAlign = 'center';
+                          this.ctx.textBaseline = 'middle';
+                          this.ctx.fillText(label, textX, textY);
+                      }
+                  }
+                  
+                  const northAngle = (-this.rotation - 90) * Math.PI / 1
+80;
+                  const northX = compassX + (radius - 5) * Math.cos(nort
+hAngle);
+                  const northY = compassY + (radius - 5) * Math.sin(nort
+hAngle);
+                  
+                  this.ctx.strokeStyle = 'red';
+                  this.ctx.lineWidth = 3;
+                  this.ctx.beginPath();
+                  this.ctx.moveTo(compassX, compassY);
+                  this.ctx.lineTo(northX, northY);
+                  this.ctx.stroke();
+                  
+                  const arrowSize = 8;
+                  const arrowAngle1 = northAngle + Math.PI * 5/6;
+                  const arrowAngle2 = northAngle + Math.PI * 7/6;
+                  
+                  const arrowX1 = northX + arrowSize * Math.cos(arrowAng
+le1);
+                  const arrowY1 = northY + arrowSize * Math.sin(arrowAng
+le1);
+                  const arrowX2 = northX + arrowSize * Math.cos(arrowAng
+le2);
+                  const arrowY2 = northY + arrowSize * Math.sin(arrowAng
+le2);
+                  
+                  this.ctx.fillStyle = 'red';
+                  this.ctx.beginPath();
+                  this.ctx.moveTo(northX, northY);
+                  this.ctx.lineTo(arrowX1, arrowY1);
+                  this.ctx.lineTo(arrowX2, arrowY2);
+                  this.ctx.closePath();
+                  this.ctx.fill();
+                  
+                  this.ctx.fillStyle = 'black';
+                  this.ctx.beginPath();
+                  this.ctx.arc(compassX, compassY, 3, 0, 2 * Math.PI);
+                  this.ctx.fill();
+                  
+                  this.ctx.fillStyle = 'black';
+                  this.ctx.font = '9px Arial';
+                  this.ctx.textAlign = 'center';
+                  this.ctx.fillText(`鏃嬭浆: ${Math.round(this.rotation)}掳`
+, compassX, compassY + radius + 20);
+                  
+                  this.ctx.fillStyle = 'red';
+                  this.ctx.font = '8px Arial';
+                  this.ctx.fillText('绾㈣壊绠ご鎸囧悜鍖?, compassX, compassY + r
+adius + 35);
+              }
+  
+              drawOSMData() {
+                  const showGeometry = this.renderMode === "geometry" ||
+ this.renderMode === "both";
+                  const showRendered = this.renderMode === "rendered" ||
+ this.renderMode === "both";
+                  const show3D = this.renderMode === "3d";
+                  
+                  // 缁樺埗ways
+                  for (const [wayId, wayData] of this.ways) {
+                      const nodeIds = wayData.nodes;
+                      if (nodeIds.length < 2) continue;
+                      
+                      const points = [];
+                      for (const nodeId of nodeIds) {
+                          if (this.nodes.has(nodeId)) {
+                              const node = this.nodes.get(nodeId);
+                              const [canvasX, canvasY] = this.worldToCan
+vas(node.lon, node.lat);
+                              points.push([canvasX, canvasY]);
+                          }
+                      }
+                      
+                      if (points.length >= 2) {
+                          const tags = wayData.tags || {};
+                          const isClosed = nodeIds.length > 2 && nodeIds
+[0] === nodeIds[nodeIds.length - 1];
+                          const isSelected = wayId === this.selectedWay;
+                          const isMultiSelected = this.selectedWays.has(
+wayId);
+                          
+                          // 3D妯″紡涓嬬殑娓叉煋
+                          if (show3D) {
+                              // 寤虹瓚鐗?D娓叉煋
+                              if (tags.building && isClosed) {
+                                  this.drawBuilding3D(points, tags, wayI
+d);
+                              }
+                              // 鍦拌矊3D娓叉煋
+                              else if (isClosed && (tags.landuse || tags
+.natural || tags.leisure)) {
+                                  this.drawLandscape3D(points, tags, way
+Id);
+                              }
+                              // 鍏朵粬瀵硅薄3D娓叉煋
+                              else {
+                                  this.drawWay3D(points, tags, isClosed,
+ isSelected, isMultiSelected);
+                              }
+                          } else {
+                              // 2D娓叉煋
+                              if (showRendered && Object.keys(tags).leng
+th > 0) {
+                                  this.drawRenderedWay(points, tags, isC
+losed, isMultiSelected);
+                              }
+                              
+                              if (showGeometry) {
+                                  this.drawGeometryWay(points, isClosed,
+ isSelected, isMultiSelected);
+                              }
+                          }
+                          
+                          // 缁樺埗鏍囩
+                          if ((this.showLabels && !show3D) || (show3D &&
+ this.threeDSettings.show3DLabels)) {
+                              if (tags.name) {
+                                  this.drawWayLabel(points, tags.name, w
+ayId);
+                              }
+                          }
+                      }
+                  }
+                  
+                  // 缁樺埗姝ｅ湪鍒涘缓鐨勮矾寰?
+                  if (this.creatingWay.length > 0) {
+                      const points = [];
+                      for (const nodeId of this.creatingWay) {
+                          if (this.nodes.has(nodeId)) {
+                              const node = this.nodes.get(nodeId);
+                              const [canvasX, canvasY] = this.worldToCan
+vas(node.lon, node.lat);
+                              points.push([canvasX, canvasY]);
+                          }
+                      }
+                      
+                      if (points.length >= 2) {
+                          this.ctx.strokeStyle = 'orange';
+                          this.ctx.lineWidth = 3;
+                          this.ctx.setLineDash([5, 5]);
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(points[0][0], points[0][1]);
+                          for (let i = 1; i < points.length; i++) {
+                              this.ctx.lineTo(points[i][0], points[i][1]
+);
+                          }
+                          this.ctx.stroke();
+                          this.ctx.setLineDash([]);
+                      }
+                  }
+                  
+                  // 缁樺埗nodes
+                  if (showGeometry || !show3D) {
+                      for (const [nodeId, nodeData] of this.nodes) {
+                          const [canvasX, canvasY] = this.worldToCanvas(
+nodeData.lon, nodeData.lat);
+                          
+                          if (canvasX >= -10 && canvasX <= this.canvas.w
+idth + 10 &&
+                              canvasY >= -10 && canvasY <= this.canvas.h
+eight + 10) {
+                              
+                              const isInCreation = this.creatingWay.incl
+udes(nodeId);
+                              const isSelected = nodeId === this.selecte
+dNode;
+                              const isModified = nodeData.modified || fa
+lse;
+                              
+                              let color, size;
+                              if (isSelected) {
+                                  color = 'red';
+                                  size = 8;
+                              } else if (isModified) {
+                                  color = 'purple';
+                                  size = 6;
+                              } else if (isInCreation) {
+                                  color = 'orange';
+                                  size = 6;
+                              } else {
+                                  color = 'blue';
+                                  size = 4;
+                              }
+                              
+                              this.ctx.fillStyle = color;
+                              this.ctx.strokeStyle = 'white';
+                              this.ctx.lineWidth = 1;
+                              this.ctx.beginPath();
+                              this.ctx.arc(canvasX, canvasY, size, 0, 2 
+* Math.PI);
+                              this.ctx.fill();
+                              this.ctx.stroke();
+                              
+                              // 缁樺埗鑺傜偣鏍囩
+                              if (((this.showLabels && !show3D) || (show
+3D && this.threeDSettings.show3DLabels)) 
+                                  && nodeData.tags && nodeData.tags.name
+) {
+                                  this.drawNodeLabel(canvasX, canvasY, n
+odeData.tags.name);
+                              }
+                          }
+                      }
+                  }
+              }
+  
+              drawRenderedWay(points, tags, isClosed, isMultiSelected) {
+                  if (isClosed) {
+                      const buildingStyle = this.getBuildingStyle(tags);
+                      const landscapeStyle = this.getLandscapeStyle(tags
+);
+                      
+                      if (buildingStyle) {
+                          this.ctx.fillStyle = isMultiSelected ? '#FFFF0
+0' : buildingStyle.fill;
+                          this.ctx.strokeStyle = buildingStyle.outline;
+                          this.ctx.lineWidth = buildingStyle.width;
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(points[0][0], points[0][1]);
+                          for (let i = 1; i < points.length; i++) {
+                              this.ctx.lineTo(points[i][0], points[i][1]
+);
+                          }
+                          this.ctx.closePath();
+                          this.ctx.fill();
+                          this.ctx.stroke();
+                      } else if (landscapeStyle) {
+                          this.ctx.fillStyle = isMultiSelected ? '#FFFF0
+0' : landscapeStyle.fill;
+                          this.ctx.strokeStyle = landscapeStyle.outline;
+                          this.ctx.lineWidth = landscapeStyle.width;
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(points[0][0], points[0][1]);
+                          for (let i = 1; i < points.length; i++) {
+                              this.ctx.lineTo(points[i][0], points[i][1]
+);
+                          }
+                          this.ctx.closePath();
+                          this.ctx.fill();
+                          this.ctx.stroke();
+                      } else {
+                          const style = this.getWayStyle(tags);
+                          this.ctx.strokeStyle = isMultiSelected ? 'yell
+ow' : style.fill;
+                          this.ctx.lineWidth = style.width;
+                          this.ctx.fillStyle = 'transparent';
+                          this.ctx.beginPath();
+                          this.ctx.moveTo(points[0][0], points[0][1]);
+                          for (let i = 1; i < points.length; i++) {
+                              this.ctx.lineTo(points[i][0], points[i][1]
+);
+                          }
+                          this.ctx.closePath();
+                          this.ctx.stroke();
+                      }
+                  } else {
+                      const style = this.getWayStyle(tags);
+                      this.ctx.strokeStyle = isMultiSelected ? 'yellow' 
+: style.fill;
+                      this.ctx.lineWidth = style.width;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0], points[0][1]);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0], points[i][1]);
+                      }
+                      this.ctx.stroke();
+                  }
+              }
+  
+              drawGeometryWay(points, isClosed, isSelected, isMultiSelec
+ted) {
+                  const color = isSelected ? 'red' : (isMultiSelected ? 
+'yellow' : 'black');
+                  const width = (isSelected || isMultiSelected) ? 3 : 1;
+                  
+                  this.ctx.strokeStyle = color;
+                  this.ctx.lineWidth = width;
+                  this.ctx.fillStyle = 'transparent';
+                  
+                  if (isClosed && points.length >= 3) {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0], points[0][1]);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0], points[i][1]);
+                      }
+                      this.ctx.closePath();
+                      this.ctx.stroke();
+                  } else {
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(points[0][0], points[0][1]);
+                      for (let i = 1; i < points.length; i++) {
+                          this.ctx.lineTo(points[i][0], points[i][1]);
+                      }
+                      this.ctx.stroke();
+                  }
+              }
+  
+              drawWayLabel(points, name, wayId) {
+                  const nameLabel = this.getNameLabel(name);
+                  if (!nameLabel) return;
+                  
+                  let centerX = 0, centerY = 0;
+                  for (const [x, y] of points) {
+                      centerX += x;
+                      centerY += y;
+                  }
+                  centerX /= points.length;
+                  centerY /= points.length;
+                  
+                  this.ctx.fillStyle = 'darkblue';
+                  this.ctx.font = 'bold 10px Arial';
+                  this.ctx.textAlign = 'center';
+                  this.ctx.textBaseline = 'middle';
+                  this.ctx.fillText(nameLabel, centerX, centerY);
+              }
+  
+              drawNodeLabel(canvasX, canvasY, name) {
+                  const nameLabel = this.getNameLabel(name);
+                  if (!nameLabel) return;
+                  
+                  this.ctx.fillStyle = 'darkgreen';
+                  this.ctx.font = 'bold 9px Arial';
+                  this.ctx.textAlign = 'left';
+                  this.ctx.textBaseline = 'middle';
+                  this.ctx.fillText(nameLabel, canvasX + 15, canvasY - 1
+0);
+              }
+  
+              getNameLabel(name) {
+                  if (!name) return null;
+                  
+                  let chineseChars = '';
+                  for (const char of name) {
+                      if (char >= '\u4e00' && char <= '\u9fff') {
+                          chineseChars += char;
+                      }
+                  }
+                  
+                  return chineseChars || name;
+              }
+  
+              getBuildingStyle(tags) {
+                  if (!tags.building) return null;
+                  
+                  const buildingColor = this.getBuildingColor(tags);
+                  return { fill: buildingColor, outline: '#000000', widt
+h: 2 };
+              }
+  
+              getLandscapeStyle(tags) {
+                  const landuse = tags.landuse;
+                  const natural = tags.natural;
+                  const leisure = tags.leisure;
+                  
+                  if (landuse === 'grass' || leisure === 'park' || leisu
+re === 'garden') {
+                      return { fill: '#90EE90', outline: '#228B22', widt
+h: 1 };
+                  } else if (natural === 'forest' || natural === 'wood' 
+|| landuse === 'forest') {
+                      return { fill: '#228B22', outline: '#006400', widt
+h: 1 };
+                  } else if (landuse === 'farmland' || landuse === 'mead
+ow') {
+                      return { fill: '#ADFF2F', outline: '#32CD32', widt
+h: 1 };
+                  } else if (natural === 'water' || landuse === 'reservo
+ir') {
+                      return { fill: '#4169E1', outline: '#000080', widt
+h: 1 };
+                  } else if (landuse === 'residential') {
+                      return { fill: '#FFE4B5', outline: '#8B4513', widt
+h: 1 };
+                  } else if (landuse === 'commercial') {
+                      return { fill: '#DDA0DD', outline: '#800080', widt
+h: 1 };
+                  } else if (landuse === 'industrial') {
+                      return { fill: '#D3D3D3', outline: '#696969', widt
+h: 1 };
+                  }
+                  
+                  return null;
+              }
+  
+              getWayStyle(tags) {
+                  if (tags.highway) {
+                      const styles = {
+                          'motorway': { fill: '#FF6B6B', width: 6 },
+                          'trunk': { fill: '#FF6B6B', width: 6 },
+                          'primary': { fill: '#4ECDC4', width: 4 },
+                          'secondary': { fill: '#4ECDC4', width: 4 },
+                          'residential': { fill: '#45B7D1', width: 2 },
+                          'tertiary': { fill: '#45B7D1', width: 2 },
+                          'footway': { fill: '#96CEB4', width: 1 }
+                      };
+                      return styles[tags.highway] || { fill: '#333333', 
+width: 2 };
+                  } else if (tags.waterway) {
+                      return { fill: '#74C0FC', width: 3 };
+                  } else if (tags.railway) {
+                      return { fill: '#000000', width: 2 };
+                  }
+                  return { fill: '#666666', width: 1 };
+              }
+  
+              drawBoxSelect() {
+                  if (this.boxSelecting && this.boxStart && this.boxCurr
+ent) {
+                      this.ctx.strokeStyle = 'blue';
+                      this.ctx.lineWidth = 2;
+                      this.ctx.setLineDash([5, 5]);
+                      this.ctx.beginPath();
+                      this.ctx.rect(
+                          this.boxStart[0], this.boxStart[1],
+                          this.boxCurrent[0] - this.boxStart[0],
+                          this.boxCurrent[1] - this.boxStart[1]
+                      );
+                      this.ctx.stroke();
+                      this.ctx.setLineDash([]);
+                  }
+              }
+  
+              drawMeasurement() {
+                  if (this.measurePoints.length < 2) return;
+                  
+                  for (let i = 0; i < this.measurePoints.length - 1; i++
+) {
+                      const [x1, y1] = this.worldToCanvas(this.measurePo
+ints[i][0], this.measurePoints[i][1]);
+                      const [x2, y2] = this.worldToCanvas(this.measurePo
+ints[i + 1][0], this.measurePoints[i + 1][1]);
+                      
+                      this.ctx.strokeStyle = 'red';
+                      this.ctx.lineWidth = 3;
+                      this.ctx.beginPath();
+                      this.ctx.moveTo(x1, y1);
+                      this.ctx.lineTo(x2, y2);
+                      this.ctx.stroke();
+                      
+                      const midX = (x1 + x2) / 2;
+                      const midY = (y1 + y2) / 2;
+                      const distance = this.measureDistances[i];
+                      
+                      const distanceText = distance < 1000 ? `${distance
+.toFixed(1)}m` : `${(distance/1000).toFixed(2)}km`;
+                      
+                      this.ctx.fillStyle = 'white';
+                      this.ctx.strokeStyle = 'red';
+                      this.ctx.lineWidth = 1;
+                      this.ctx.beginPath();
+                      this.ctx.rect(midX - 25, midY - 8, 50, 16);
+                      this.ctx.fill();
+                      this.ctx.stroke();
+                      
+                      this.ctx.fillStyle = 'red';
+                      this.ctx.font = 'bold 9px Arial';
+                      this.ctx.textAlign = 'center';
+                      this.ctx.textBaseline = 'middle';
+                      this.ctx.fillText(distanceText, midX, midY);
+                  }
+                  
+                  for (let i = 0; i < this.measurePoints.length; i++) {
+                      const [x, y] = this.worldToCanvas(this.measurePoin
+ts[i][0], this.measurePoints[i][1]);
+                      
+                      this.ctx.fillStyle = 'red';
+                      this.ctx.strokeStyle = 'white';
+                      this.ctx.lineWidth = 2;
+                      this.ctx.beginPath();
+                      this.ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                      this.ctx.fill();
+                      this.ctx.stroke();
+                      
+                      this.ctx.fillStyle = 'red';
+                      this.ctx.font = 'bold 10px Arial';
+                      this.ctx.textAlign = 'center';
+                      this.ctx.textBaseline = 'middle';
+                      this.ctx.fillText((i + 1).toString(), x, y - 15);
+                  }
+              }
+  
+              // 浜嬩欢澶勭悊鏂规硶
+              handleSelect(canvasX, canvasY, shiftPressed = false, ctrlP
+ressed = false) {
+                  let minDist = Infinity;
+                  let closestNode = null;
+                  
+                  for (const [nodeId, nodeData] of this.nodes) {
+                      const [nodeCanvasX, nodeCanvasY] = this.worldToCan
+vas(nodeData.lon, nodeData.lat);
+                      const dist = Math.sqrt((canvasX - nodeCanvasX) ** 
+2 + (canvasY - nodeCanvasY) ** 2);
+                      
+                      if (dist < 15 && dist < minDist) {
+                          minDist = dist;
+                          closestNode = nodeId;
+                      }
+                  }
+                  
+                  let closestWay = null;
+                  let minWayDist = Infinity;
+                  for (const [wayId, wayData] of this.ways) {
+                      const nodeIds = wayData.nodes;
+                      if (nodeIds.length >= 2) {
+                          for (let i = 0; i < nodeIds.length - 1; i++) {
+                              const node1Id = nodeIds[i];
+                              const node2Id = nodeIds[i + 1];
+                              
+                              if (this.nodes.has(node1Id) && this.nodes.
+has(node2Id)) {
+                                  const [x1, y1] = this.worldToCanvas(th
+is.nodes.get(node1Id).lon, this.nodes.get(node1Id).lat);
+                                  const [x2, y2] = this.worldToCanvas(th
+is.nodes.get(node2Id).lon, this.nodes.get(node2Id).lat);
+                                  
+                                  const dist = this.pointToLineDistance(
+canvasX, canvasY, x1, y1, x2, y2);
+                                  if (dist < 10 && dist < minWayDist) {
+                                      minWayDist = dist;
+                                      closestWay = wayId;
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  
+                  if (closestNode && (!closestWay || minDist < minWayDis
+t)) {
+                      this.selectedNode = closestNode;
+                      this.selectedWay = null;
+                  } else if (closestWay) {
+                      const wayData = this.ways.get(closestWay);
+                      const nodeIds = wayData.nodes;
+                      const isPolygon = nodeIds.length >= 4 && nodeIds[0
+] === nodeIds[nodeIds.length - 1];
+                      
+                      if (isPolygon) {
+                          if (shiftPressed) {
+                              this.selectedWays.delete(closestWay);
+                          } else if (ctrlPressed) {
+                              this.selectedWays.add(closestWay);
+                          } else {
+                              this.selectedWay = closestWay;
+                              this.selectedWays.clear();
+                              this.selectedWays.add(closestWay);
+                          }
+                      } else {
+                          this.selectedWay = closestWay;
+                          this.selectedWays.clear();
+                      }
+                      
+                      this.selectedNode = null;
+                  } else {
+                      if (!shiftPressed && !ctrlPressed) {
+                          this.selectedNode = null;
+                          this.selectedWay = null;
+                          this.selectedWays.clear();
+                      }
+                  }
+                  
+                  this.updateSelectionInfo();
+                  this.updateMultiselectInfo();
+                  this.redraw();
+              }
+  
+              pointToLineDistance(px, py, x1, y1, x2, y2) {
+                  const A = px - x1;
+                  const B = py - y1;
+                  const C = x2 - x1;
+                  const D = y2 - y1;
+                  
+                  const dot = A * C + B * D;
+                  const lenSq = C * C + D * D;
+                  
+                  if (lenSq === 0) {
+                      return Math.sqrt(A * A + B * B);
+                  }
+                  
+                  const param = dot / lenSq;
+                  
+                  let xx, yy;
+                  if (param < 0) {
+                      xx = x1;
+                      yy = y1;
+                  } else if (param > 1) {
+                      xx = x2;
+                      yy = y2;
+                  } else {
+                      xx = x1 + param * C;
+                      yy = y1 + param * D;
+                  }
+                  
+                  const dx = px - xx;
+                  const dy = py - yy;
+                  return Math.sqrt(dx * dx + dy * dy);
+              }
+  
+              startBoxSelect(x, y) {
+                  this.boxSelecting = true;
+                  this.boxStart = [x, y];
+                  this.boxCurrent = [x, y];
+              }
+  
+              updateBoxSelect(x, y) {
+                  if (this.boxSelecting) {
+                      this.boxCurrent = [x, y];
+                      this.redraw();
+                  }
+              }
+  
+              finishBoxSelect(x, y, shiftPressed = false, ctrlPressed = 
+false) {
+                  if (!this.boxSelecting) return;
+                  
+                  this.boxSelecting = false;
+                  
+                  const x1 = this.boxStart[0];
+                  const y1 = this.boxStart[1];
+                  const x2 = x;
+                  const y2 = y;
+                  
+                  const minX = Math.min(x1, x2);
+                  const maxX = Math.max(x1, x2);
+                  const minY = Math.min(y1, y2);
+                  const maxY = Math.max(y1, y2);
+                  
+                  const selectedInBox = new Set();
+                  
+                  for (const [wayId, wayData] of this.ways) {
+                      const nodeIds = wayData.nodes;
+                      if (nodeIds.length >= 4 && nodeIds[0] === nodeIds[
+nodeIds.length - 1]) {
+                          let allInBox = true;
+                          for (const nodeId of nodeIds) {
+                              if (this.nodes.has(nodeId)) {
+                                  const node = this.nodes.get(nodeId);
+                                  const [canvasX, canvasY] = this.worldT
+oCanvas(node.lon, node.lat);
+                                  if (!(minX <= canvasX && canvasX <= ma
+xX && minY <= canvasY && canvasY <= maxY)) {
+                                      allInBox = false;
+                                      break;
+                                  }
+                              }
+                          }
+                          
+                          if (allInBox) {
+                              selectedInBox.add(wayId);
+                          }
+                      }
+                  }
+                  
+                  if (shiftPressed) {
+                      for (const wayId of selectedInBox) {
+                          this.selectedWays.delete(wayId);
+                      }
+                  } else if (ctrlPressed) {
+                      for (const wayId of selectedInBox) {
+                          this.selectedWays.add(wayId);
+                      }
+                  } else {
+                      this.selectedWays = selectedInBox;
+                  }
+                  
+                  this.updateMultiselectInfo();
+                  this.redraw();
+              }
+  
+              addNode(worldX, worldY) {
+                  const nodeId = this.nodes.size > 0 ? Math.max(...this.
+nodes.keys()) + 1 : 1;
+                  const nodeData = {
+                      lat: worldY,
+                      lon: worldX,
+                      tags: {}
+                  };
+                  
+                  const command = new AddObjectCommand(this, 'node', nod
+eId, nodeData);
+                  this.executeCommand(command);
+                  this.redraw();
+              }
+  
+              handleWayCreation(canvasX, canvasY) {
+                  const closestNode = this.findClosestNode(canvasX, canv
+asY);
+                  
+                  if (closestNode) {
+                      if (!this.creatingWay.includes(closestNode)) {
+                          this.creatingWay.push(closestNode);
+                      }
+                  } else {
+                      const [worldX, worldY] = this.canvasToWorld(canvas
+X, canvasY);
+                      
+                      if (this.gridSettings.snapToGrid) {
+                          const [snapX, snapY] = this.snapToGrid(worldX,
+ worldY);
+                          worldX = snapX;
+                          worldY = snapY;
+                      }
+                      
+                      const nodeId = this.nodes.size > 0 ? Math.max(...t
+his.nodes.keys()) + 1 : 1;
+                      const nodeData = {
+                          lat: worldY,
+                          lon: worldX,
+                          tags: {}
+                      };
+                      
+                      const command = new AddObjectCommand(this, 'node',
+ nodeId, nodeData);
+                      this.executeCommand(command);
+                      this.creatingWay.push(nodeId);
+                  }
+                  
+                  this.updateCreateStatus();
+                  this.redraw();
+              }
+  
+              handlePolygonCreation(canvasX, canvasY) {
+                  this.handleWayCreation(canvasX, canvasY);
+              }
+  
+              findClosestNode(canvasX, canvasY, maxDistance = 15) {
+                  let minDist = Infinity;
+                  let closestNode = null;
+                  
+                  for (const [nodeId, nodeData] of this.nodes) {
+                      const [nodeCanvasX, nodeCanvasY] = this.worldToCan
+vas(nodeData.lon, nodeData.lat);
+                      const dist = Math.sqrt((canvasX - nodeCanvasX) ** 
+2 + (canvasY - nodeCanvasY) ** 2);
+                      
+                      if (dist < maxDistance && dist < minDist) {
+                          minDist = dist;
+                          closestNode = nodeId;
+                      }
+                  }
+                  
+                  return closestNode;
+              }
+  
+              finishCreation() {
+                  if (this.creatingWay.length < 2) return;
+                  
+                  const wayId = this.ways.size > 0 ? Math.max(...this.wa
+ys.keys()) + 1 : 1;
+                  
+                  let wayData;
+                  if (this.mode === "add_polygon" && this.creatingWay.le
+ngth >= 3) {
+                      if (this.creatingWay[0] !== this.creatingWay[this.
+creatingWay.length - 1]) {
+                          this.creatingWay.push(this.creatingWay[0]);
+                      }
+                      wayData = {
+                          nodes: [...this.creatingWay],
+                          tags: { area: 'yes' }
+                      };
+                  } else {
+                      wayData = {
+                          nodes: [...this.creatingWay],
+                          tags: {}
+                      };
+                  }
+                  
+                  const command = new AddObjectCommand(this, 'way', wayI
+d, wayData);
+                  this.executeCommand(command);
+                  
+                  this.creatingWay = [];
+                  this.updateCreateStatus();
+                  this.redraw();
+              }
+  
+              cancelCreation() {
+                  this.creatingWay = [];
+                  this.boxSelecting = false;
+                  this.updateCreateStatus();
+                  this.redraw();
+              }
+  
+              moveSelectedNode(dx, dy) {
+                  if (this.selectedNode && this.nodes.has(this.selectedN
+ode)) {
+                      const worldDx = dx / this.scale;
+                      const worldDy = -dy / this.scale;
+                      
+                      const rad = -this.rotation * Math.PI / 180;
+                      const cosR = Math.cos(rad);
+                      const sinR = Math.sin(rad);
+                      
+                      const rotatedDx = worldDx * cosR - worldDy * sinR;
+                      const rotatedDy = worldDx * sinR + worldDy * cosR;
+                      
+                      const node = this.nodes.get(this.selectedNode);
+                      let newLon = node.lon + rotatedDx;
+                      let newLat = node.lat + rotatedDy;
+                      
+                      if (this.gridSettings.snapToGrid) {
+                          [newLon, newLat] = this.snapToGrid(newLon, new
+Lat);
+                      }
+                      
+                      node.lon = newLon;
+                      node.lat = newLat;
+                      
+                      this.redraw();
+                      this.updateSelectionInfo();
+                  }
+              }
+  
+              calculateDistance(point1, point2) {
+                  const [lon1, lat1] = point1;
+                  const [lon2, lat2] = point2;
+                  
+                  const [x1, y1] = this.coordSystem.geographicToScene(lo
+n1, lat1);
+                  const [x2, y2] = this.coordSystem.geographicToScene(lo
+n2, lat2);
+                  
+                  return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+              }
+  
+              addMeasurePoint(worldX, worldY) {
+                  this.measurePoints.push([worldX, worldY]);
+                  
+                  if (this.measurePoints.length > 1) {
+                      const distance = this.calculateDistance(
+                          this.measurePoints[this.measurePoints.length -
+ 2],
+                          this.measurePoints[this.measurePoints.length -
+ 1]
+                      );
+                      this.measureDistances.push(distance);
+                      
+                      const totalDistance = this.measureDistances.reduce
+((sum, d) => sum + d, 0);
+                      
+                      const measureLabel = document.getElementById('meas
+ureLabel');
+                      if (totalDistance < 1000) {
+                          measureLabel.textContent = `璺濈: ${totalDistan
+ce.toFixed(1)}m`;
+                      } else {
+                          measureLabel.textContent = `璺濈: ${(totalDista
+nce / 1000).toFixed(2)}km`;
+                      }
+                  }
+                  
+                  this.redraw();
+              }
+  
+              clearMeasurement() {
+                  this.measurePoints = [];
+                  this.measureDistances = [];
+                  document.getElementById('measureLabel').textContent = 
+"璺濈: 0m";
+                  this.redraw();
+              }
+  
+              // 閫夋嫨鎿嶄綔
+              selectAllPolygons() {
+                  this.selectedWays.clear();
+                  for (const [wayId, wayData] of this.ways) {
+                      const nodeIds = wayData.nodes;
+                      if (nodeIds.length >= 4 && nodeIds[0] === nodeIds[
+nodeIds.length - 1]) {
+                          this.selectedWays.add(wayId);
+                      }
+                  }
+                  
+                  this.updateMultiselectInfo();
+                  this.redraw();
+              }
+  
+              clearSelection() {
+                  this.selectedNode = null;
+                  this.selectedWay = null;
+                  this.selectedWays.clear();
+                  this.updateMultiselectInfo();
+                  this.updateSelectionInfo();
+                  this.redraw();
+              }
+  
+              deleteSelected() {
+                  if (this.selectedNode) {
+                      const nodeData = structuredClone(this.nodes.get(th
+is.selectedNode));
+                      const affectedWays = {};
+                      
+                      for (const [wayId, wayData] of this.ways) {
+                          if (wayData.nodes.includes(this.selectedNode))
+ {
+                              affectedWays[wayId] = structuredClone(wayD
+ata);
+                          }
+                      }
+                      
+                      const finalAffectedWays = {};
+                      for (const [wayId, wayData] of Object.entries(affe
+ctedWays)) {
+                          const remainingNodes = wayData.nodes.filter(n 
+=> n !== this.selectedNode);
+                          if (remainingNodes.length < 2) {
+                              finalAffectedWays[wayId] = wayData;
+                          }
+                      }
+                      
+                      const command = new DeleteObjectCommand(this, 'nod
+e', this.selectedNode, nodeData, finalAffectedWays);
+                      this.executeCommand(command);
+                      
+                      this.selectedNode = null;
+                      
+                  } else if (this.selectedWay) {
+                      const wayData = structuredClone(this.ways.get(this
+.selectedWay));
+                      const command = new DeleteObjectCommand(this, 'way
+', this.selectedWay, wayData);
+                      this.executeCommand(command);
+                      
+                      this.selectedWay = null;
+                  } else if (this.selectedWays.size > 0) {
+                      for (const wayId of this.selectedWays) {
+                          const wayData = structuredClone(this.ways.get(
+wayId));
+                          const command = new DeleteObjectCommand(this, 
+'way', wayId, wayData);
+                          this.executeCommand(command);
+                      }
+                      
+                      this.selectedWays.clear();
+                  } else {
+                      alert("璇峰厛閫夋嫨涓€涓璞★紒");
+                      return;
+                  }
+                  
+                  this.redraw();
+                  this.updateSelectionInfo();
+                  this.updateMultiselectInfo();
+              }
+  
+              updateSelectionInfo() {
+                  const infoText = document.getElementById('infoText');
+                  let info = '';
+                  
+                  if (this.selectedNode) {
+                      const node = this.nodes.get(this.selectedNode);
+                      info = `鑺傜偣 ID: ${this.selectedNode}\n`;
+                      
+                      if (this.coordSystem.coordType === "geographic") {
+                          info += `缁忓害: ${node.lon.toFixed(6)}\n`;
+                          info += `绾害: ${node.lat.toFixed(6)}\n`;
+                      } else {
+                          const [sceneX, sceneY] = this.coordSystem.geog
+raphicToScene(node.lon, node.lat);
+                          info += `X: ${sceneX.toFixed(2)} 绫砛n`;
+                          info += `Y: ${sceneY.toFixed(2)} 绫砛n`;
+                      }
+                      
+                      info += node.modified ? "鐘舵€? 宸蹭慨鏀筡n" : "鐘舵€? 鍘熷\
+n";
+                      
+                      const tags = node.tags || {};
+                      if (Object.keys(tags).length > 0) {
+                          info += "\n鏍囩:\n";
+                          for (const [key, value] of Object.entries(tags
+)) {
+                              info += `  ${key} = ${value}\n`;
+                          }
+                      } else {
+                          info += "\n鏃犳爣绛?;
+                      }
+                      
+                  } else if (this.selectedWay) {
+                      const way = this.ways.get(this.selectedWay);
+                      info = `璺緞 ID: ${this.selectedWay}\n`;
+                      info += `鑺傜偣鏁? ${way.nodes.length}\n`;
+                      info += `鑺傜偣: ${way.nodes.join(', ')}\n`;
+                      
+                      const tags = way.tags || {};
+                      if (Object.keys(tags).length > 0) {
+                          info += "\n鏍囩:\n";
+                          for (const [key, value] of Object.entries(tags
+)) {
+                              info += `  ${key} = ${value}\n`;
+                          }
+                          
+                          if (tags.building) {
+                              const height = this.getBuildingHeight(tags
+);
+                              const color = this.getBuildingColor(tags);
+                              info += `\n寤虹瓚楂樺害: ${height}绫砛n`;
+                              info += `寤虹瓚棰滆壊: ${color}\n`;
+                          }
+                      } else {
+                          info += "\n鏃犳爣绛?;
+                      }
+                      
+                  } else if (this.selectedWays.size > 0) {
+                      info = `澶氶€?- 鍏遍€夋嫨浜?${this.selectedWays.size} 涓
+杈瑰舰:\n\n`;
+                      let i = 0;
+                      for (const wayId of Array.from(this.selectedWays).
+sort((a, b) => a - b)) {
+                          const way = this.ways.get(wayId);
+                          info += `澶氳竟褰?${i + 1} (ID: ${wayId}):\n`;
+                          info += `  鑺傜偣鏁? ${way.nodes.length}\n`;
+                          
+                          const tags = way.tags || {};
+                          if (Object.keys(tags).length > 0) {
+                              const mainTags = Object.entries(tags).slic
+e(0, 3);
+                              const tagStrings = mainTags.map(([k, v]) =
+> `${k}=${v}`);
+                              info += `  涓昏鏍囩: {${tagStrings.join(', '
+)}}\n`;
+                              
+                              if (tags.building) {
+                                  const height = this.getBuildingHeight(
+tags);
+                                  const color = this.getBuildingColor(ta
+gs);
+                                  info += `  楂樺害: ${height}绫砛n`;
+                                  info += `  棰滆壊: ${color}\n`;
+                              }
+                          }
+                          
+                          info += "\n";
+                          i++;
+                      }
+                  }
+                  
+                  infoText.textContent = info;
+              }
+  
+              // 瑙嗗浘鎺у埗
+              resetView() {
+                  this.scale = 100000;
+                  this.centerX = 0;
+                  this.centerY = 0;
+                  this.rotation = 0;
+                  this.redraw();
+              }
+  
+              fitToWindow() {
+                  if (this.nodes.size === 0) return;
+                  
+                  const lons = Array.from(this.nodes.values()).map(node 
+=> node.lon);
+                  const lats = Array.from(this.nodes.values()).map(node 
+=> node.lat);
+                  
+                  const minLon = Math.min(...lons);
+                  const maxLon = Math.max(...lons);
+                  const minLat = Math.min(...lats);
+                  const maxLat = Math.max(...lats);
+                  
+                  this.centerX = (minLon + maxLon) / 2;
+                  this.centerY = (minLat + maxLat) / 2;
+                  
+                  const dataWidth = maxLon - minLon;
+                  const dataHeight = maxLat - minLat;
+                  
+                  if (dataWidth > 0 && dataHeight > 0) {
+                      const scaleX = this.canvas.width * 0.8 / dataWidth
+;
+                      const scaleY = this.canvas.height * 0.8 / dataHeig
+ht;
+                      this.scale = Math.min(scaleX, scaleY);
+                      this.scale = Math.max(1000, Math.min(1000000, this
+.scale));
+                  }
+                  
+                  this.rotation = 0;
+                  this.redraw();
+              }
+  
+              rotateView(angle) {
+                  this.rotation += angle;
+                  this.rotation = this.rotation % 360;
+                  this.redraw();
+              }
+  
+              // 鍧愭爣绯荤粺璁剧疆
+              setSceneOrigin() {
+                  const dialog = this.createDialog('璁剧疆鍦烘櫙鍧愭爣绯诲師鐐?, 400,
+ 200);
+                  
+                  dialog.innerHTML = `
+                      <h3>璁剧疆鍦烘櫙鍧愭爣绯诲師鐐?/h3>
+                      <div class="form-row">
+                          <label>缁忓害:</label>
+                          <input type="number" id="originLon" value="${t
+his.coordSystem.sceneOriginLon}" step="0.000001">
+                      </div>
+                      <div class="form-row">
+                          <label>绾害:</label>
+                          <input type="number" id="originLat" value="${t
+his.coordSystem.sceneOriginLat}" step="0.000001">
+                      </div>
+                      <div class="dialog-buttons">
+                          <button onclick="editor.applySceneOrigin()">纭
+畾</button>
+                          <button onclick="editor.closeDialog()">鍙栨秷</bu
+tton>
+                      </div>
+                  `;
+              }
+  
+              applySceneOrigin() {
+                  const lonInput = document.getElementById('originLon');
+                  const latInput = document.getElementById('originLat');
+                  
+                  try {
+                      this.coordSystem.sceneOriginLon = parseFloat(lonIn
+put.value);
+                      this.coordSystem.sceneOriginLat = parseFloat(latIn
+put.value);
+                      this.redraw();
+                      this.closeDialog();
+                  } catch (error) {
+                      alert('璇疯緭鍏ユ湁鏁堢殑鏁板€硷紒');
+                  }
+              }
+  
+              useCurrentCenterAsOrigin() {
+                  this.coordSystem.sceneOriginLon = this.centerX;
+                  this.coordSystem.sceneOriginLat = this.centerY;
+                  this.redraw();
+                  alert(`鍦烘櫙鍧愭爣绯诲師鐐瑰凡璁剧疆涓?\n缁忓害: ${this.centerX.toFixed(
+6)}\n绾害: ${this.centerY.toFixed(6)}`);
+              }
+  
+              // 鏍囩缂栬緫
+              editTags() {
+                  if (this.selectedNode) {
+                      const node = this.nodes.get(this.selectedNode);
+                      const oldTags = structuredClone(node.tags || {});
+                      this.showTagEditor('node', this.selectedNode, oldT
+ags);
+                  } else if (this.selectedWay) {
+                      const way = this.ways.get(this.selectedWay);
+                      const oldTags = structuredClone(way.tags || {});
+                      this.showTagEditor('way', this.selectedWay, oldTag
+s);
+                  } else {
+                      alert("璇峰厛閫夋嫨涓€涓璞★紒");
+                  }
+              }
+  
+              showTagEditor(objType, objId, tags) {
+                  const dialog = this.createDialog('缂栬緫鏍囩', 500, 400);
+                  
+                  let tagRows = '';
+                  for (const [key, value] of Object.entries(tags)) {
+                      tagRows += `
+                          <tr class="tag-row">
+                              <td>${key}</td>
+                              <td>${value}</td>
+                          </tr>
+                      `;
+                  }
+                  
+                  dialog.innerHTML = `
+                      <h3>缂栬緫鏍囩</h3>
+                      <table class="tag-table">
+                          <thead>
+                              <tr>
+                                  <th>閿?/th>
+                                  <th>鍊?/th>
+                              </tr>
+                          </thead>
+                          <tbody id="tagTableBody">
+                              ${tagRows}
+                          </tbody>
+                      </table>
+                      <div class="dialog-buttons">
+                          <button onclick="editor.addTag()">娣诲姞</button>
+                          <button onclick="editor.editSelectedTag()">缂栬緫
+</button>
+                          <button onclick="editor.deleteSelectedTag()">鍒
+犻櫎</button>
+                          <button onclick="editor.applyTagChanges('${obj
+Type}', ${objId})">纭畾</button>
+                          <button onclick="editor.closeDialog()">鍙栨秷</bu
+tton>
+                      </div>
+                  `;
+                  
+                  const rows = dialog.querySelectorAll('.tag-row');
+                  rows.forEach(row => {
+                      row.addEventListener('click', () => {
+                          rows.forEach(r => r.classList.remove('selected
+'));
+                          row.classList.add('selected');
+                      });
+                  });
+              }
+  
+              addTag() {
+                  const key = prompt('璇疯緭鍏ラ敭:');
+                  if (key) {
+                      const value = prompt('璇疯緭鍏ュ€?');
+                      if (value !== null) {
+                          const tbody = document.getElementById('tagTabl
+eBody');
+                          const row = document.createElement('tr');
+                          row.className = 'tag-row';
+                          row.innerHTML = `<td>${key}</td><td>${value}</
+td>`;
+                          row.addEventListener('click', () => {
+                              document.querySelectorAll('.tag-row').forE
+ach(r => r.classList.remove('selected'));
+                              row.classList.add('selected');
+                          });
+                          tbody.appendChild(row);
+                      }
+                  }
+              }
+  
+              editSelectedTag() {
+                  const selectedRow = document.querySelector('.tag-row.s
+elected');
+                  if (selectedRow) {
+                      const cells = selectedRow.querySelectorAll('td');
+                      const oldKey = cells[0].textContent;
+                      const oldValue = cells[1].textContent;
+                      
+                      const key = prompt('璇疯緭鍏ラ敭:', oldKey);
+                      if (key !== null) {
+                          const value = prompt('璇疯緭鍏ュ€?', oldValue);
+                          if (value !== null) {
+                              cells[0].textContent = key;
+                              cells[1].textContent = value;
+                          }
+                      }
+                  }
+              }
+  
+              deleteSelectedTag() {
+                  const selectedRow = document.querySelector('.tag-row.s
+elected');
+                  if (selectedRow) {
+                      selectedRow.remove();
+                  }
+              }
+  
+              applyTagChanges(objType, objId) {
+                  const rows = document.querySelectorAll('#tagTableBody 
+.tag-row');
+                  const newTags = {};
+                  
+                  rows.forEach(row => {
+                      const cells = row.querySelectorAll('td');
+                      const key = cells[0].textContent;
+                      const value = cells[1].textContent;
+                      newTags[key] = value;
+                  });
+                  
+                  let oldTags;
+                  if (objType === 'node') {
+                      oldTags = structuredClone(this.nodes.get(objId).ta
+gs || {});
+                  } else {
+                      oldTags = structuredClone(this.ways.get(objId).tag
+s || {});
+                  }
+                  
+                  const command = new ModifyTagsCommand(this, objType, o
+bjId, oldTags, newTags);
+                  this.executeCommand(command);
+                  
+                  this.updateSelectionInfo();
+                  this.redraw();
+                  this.closeDialog();
+              }
+  
+              // 鍦板浘鏍℃
+              showMapCalibration() {
+                  const dialog = this.createDialog('鍦板浘鏍℃', 700, 500);
+                  
+                  let nodeRows = '';
+                  for (const [nodeId, nodeData] of this.nodes) {
+                      const [sceneX, sceneY] = this.coordSystem.geograph
+icToScene(nodeData.lon, nodeData.lat);
+                      const status = nodeData.modified ? '宸蹭慨鏀? : '鍘熷';
+                      const tags = nodeData.tags || {};
+                      const tagStr = Object.entries(tags).slice(0, 2).ma
+p(([k, v]) => `${k}=${v}`).join(', ');
+                      
+                      nodeRows += `
+                          <tr class="node-row" data-node-id="${nodeId}">
+                              <td>${nodeId}</td>
+                              <td>${nodeData.lon.toFixed(6)}</td>
+                              <td>${nodeData.lat.toFixed(6)}</td>
+                              <td>${sceneX.toFixed(2)}</td>
+                              <td>${sceneY.toFixed(2)}</td>
+                              <td>${status}</td>
+                              <td>${tagStr}</td>
+                          </tr>
+                      `;
+                  }
+                  
+                  dialog.innerHTML = `
+                      <h3>鍦板浘鏍℃ - 淇敼鑺傜偣鍧愭爣</h3>
+                      <div style="height: 200px; overflow-y: auto; borde
+r: 1px solid #ccc; margin: 10px 0;">
+                          <table class="tag-table">
+                              <thead>
+                                  <tr>
+                                      <th>ID</th>
+                                      <th>缁忓害</th>
+                                      <th>绾害</th>
+                                      <th>X(绫?</th>
+                                      <th>Y(绫?</th>
+                                      <th>鐘舵€?/th>
+                                      <th>鏍囩</th>
+                                  </tr>
+                              </thead>
+                              <tbody id="nodeTableBody">
+                                  ${nodeRows}
+                              </tbody>
+                          </table>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>鍧愭爣绫诲瀷:</label>
+                          <input type="radio" id="coordTypeGeo" name="co
+ordType" value="geographic" checked>
+                          <label for="coordTypeGeo">缁忕含搴?/label>
+                          <input type="radio" id="coordTypeScene" name="
+coordType" value="scene">
+                          <label for="coordTypeScene">鍦烘櫙鍧愭爣(绫?</label>
+                      </div>
+                      
+                      <div id="geoInputs">
+                          <div class="form-row">
+                              <label>缁忓害:</label>
+                              <input type="number" id="editLon" step="0.
+000001">
+                              <label>绾害:</label>
+                              <input type="number" id="editLat" step="0.
+000001">
+                          </div>
+                      </div>
+                      
+                      <div id="sceneInputs" class="hidden">
+                          <div class="form-row">
+                              <label>X(绫?:</label>
+                              <input type="number" id="editX" step="0.01
+">
+                              <label>Y(绫?:</label>
+                              <input type="number" id="editY" step="0.01
+">
+                          </div>
+                      </div>
+                      
+                      <div class="dialog-buttons">
+                          <button onclick="editor.applyCalibrationChange
+s()">搴旂敤淇敼</button>
+                          <button onclick="editor.loadSelectedNodeToCali
+bration()">鑾峰彇褰撳墠閫変腑</button>
+                          <button onclick="editor.resetModifications()">
+閲嶇疆淇敼鐘舵€?/button>
+                          <button onclick="editor.closeDialog()">鍏抽棴</bu
+tton>
+                      </div>
+                  `;
+                  
+                  const rows = dialog.querySelectorAll('.node-row');
+                  rows.forEach(row => {
+                      row.addEventListener('click', () => {
+                          rows.forEach(r => r.classList.remove('selected
+'));
+                          row.classList.add('selected');
+                          
+                          const nodeId = parseInt(row.dataset.nodeId);
+                          const node = this.nodes.get(nodeId);
+                          
+                          if (document.getElementById('coordTypeGeo').ch
+ecked) {
+                              document.getElementById('editLon').value =
+ node.lon.toFixed(6);
+                              document.getElementById('editLat').value =
+ node.lat.toFixed(6);
+                          } else {
+                              const [sceneX, sceneY] = this.coordSystem.
+geographicToScene(node.lon, node.lat);
+                              document.getElementById('editX').value = s
+ceneX.toFixed(2);
+                              document.getElementById('editY').value = s
+ceneY.toFixed(2);
+                          }
+                      });
+                  });
+                  
+                  document.getElementById('coordTypeGeo').addEventListen
+er('change', () => {
+                      document.getElementById('geoInputs').classList.rem
+ove('hidden');
+                      document.getElementById('sceneInputs').classList.a
+dd('hidden');
+                  });
+                  
+                  document.getElementById('coordTypeScene').addEventList
+ener('change', () => {
+                      document.getElementById('geoInputs').classList.add
+('hidden');
+                      document.getElementById('sceneInputs').classList.r
+emove('hidden');
+                  });
+              }
+  
+              loadSelectedNodeToCalibration() {
+                  if (this.selectedNode) {
+                      const node = this.nodes.get(this.selectedNode);
+                      
+                      if (document.getElementById('coordTypeGeo').checke
+d) {
+                          document.getElementById('editLon').value = nod
+e.lon.toFixed(6);
+                          document.getElementById('editLat').value = nod
+e.lat.toFixed(6);
+                      } else {
+                          const [sceneX, sceneY] = this.coordSystem.geog
+raphicToScene(node.lon, node.lat);
+                          document.getElementById('editX').value = scene
+X.toFixed(2);
+                          document.getElementById('editY').value = scene
+Y.toFixed(2);
+                      }
+                      
+                      const rows = document.querySelectorAll('.node-row'
+);
+                      rows.forEach(row => {
+                          row.classList.remove('selected');
+                          if (parseInt(row.dataset.nodeId) === this.sele
+ctedNode) {
+                              row.classList.add('selected');
+                          }
+                      });
+                  } else {
+                      alert("璇峰厛鍦ㄥ湴鍥句笂閫夋嫨涓€涓妭鐐癸紒");
+                  }
+              }
+  
+              applyCalibrationChanges() {
+                  const selectedRow = document.querySelector('.node-row.
+selected');
+                  if (!selectedRow) {
+                      alert("璇峰厛閫夋嫨涓€涓妭鐐癸紒");
+                      return;
+                  }
+                  
+                  const nodeId = parseInt(selectedRow.dataset.nodeId);
+                  
+                  try {
+                      let newLon, newLat;
+                      
+                      if (document.getElementById('coordTypeGeo').checke
+d) {
+                          newLon = parseFloat(document.getElementById('e
+ditLon').value);
+                          newLat = parseFloat(document.getElementById('e
+ditLat').value);
+                      } else {
+                          const newX = parseFloat(document.getElementByI
+d('editX').value);
+                          const newY = parseFloat(document.getElementByI
+d('editY').value);
+                          [newLon, newLat] = this.coordSystem.sceneToGeo
+graphic(newX, newY);
+                      }
+                      
+                      const node = this.nodes.get(nodeId);
+                      const oldPos = [node.lon, node.lat];
+                      const newPos = [newLon, newLat];
+                      
+                      const command = new MoveNodeCommand(this, nodeId, 
+oldPos, newPos);
+                      this.executeCommand(command);
+                      
+                      node.modified = true;
+                      
+                      this.redraw();
+                      this.updateSelectionInfo();
+                      
+                      const coordType = document.getElementById('coordTy
+peGeo').checked ? "缁忕含搴? : "鍦烘櫙鍧愭爣";
+                      alert(`鑺傜偣 ${nodeId} ${coordType}宸叉洿鏂帮紒`);
+                      
+                  } catch (error) {
+                      alert("璇疯緭鍏ユ湁鏁堢殑鍧愭爣鏁板€硷紒");
+                  }
+              }
+  
+              resetModifications() {
+                  if (confirm("纭畾瑕侀噸缃墍鏈夎妭鐐圭殑淇敼鐘舵€佸悧锛?)) {
+                      for (const nodeData of this.nodes.values()) {
+                          delete nodeData.modified;
+                      }
+                      this.redraw();
+                      alert("鎵€鏈夎妭鐐逛慨鏀圭姸鎬佸凡閲嶇疆锛?);
+                  }
+              }
+  
+              // 缃戞牸鎺у埗闈㈡澘
+              showGridControlPanel() {
+                  const dialog = this.createDialog('缃戞牸鎺у埗闈㈡澘', 400, 500
+);
+                  
+                  dialog.innerHTML = `
+                      <h3>缃戞牸鎺у埗闈㈡澘</h3>
+                      
+                      <div class="form-row">
+                          <label>鏄剧ず璁剧疆:</label>
+                      </div>
+                      <div class="form-row">
+                          <input type="checkbox" id="showGridCheck" ${th
+is.gridSettings.showGrid ? 'checked' : ''}>
+                          <label for="showGridCheck">鏄剧ず缃戞牸</label>
+                      </div>
+                      <div class="form-row">
+                          <input type="checkbox" id="showCoordsCheck" ${
+this.gridSettings.showCoordinates ? 'checked' : ''}>
+                          <label for="showCoordsCheck">鏄剧ず缃戞牸鍧愭爣</label>
+                      </div>
+                      <div class="form-row">
+                          <input type="checkbox" id="snapToGridCheck" ${
+this.gridSettings.snapToGrid ? 'checked' : ''}>
+                          <label for="snapToGridCheck">鍚搁檮鍒扮綉鏍?/label>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>缃戞牸鍘熺偣:</label>
+                      </div>
+                      <div class="form-row">
+                          <label>缁忓害:</label>
+                          <input type="number" id="gridOriginX" value="$
+{this.gridSettings.originX}" step="0.000001">
+                      </div>
+                      <div class="form-row">
+                          <label>绾害:</label>
+                          <input type="number" id="gridOriginY" value="$
+{this.gridSettings.originY}" step="0.000001">
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>缃戞牸澶у皬:</label>
+                          <select id="gridSizeSelect">
+                              <option value="1" ${this.gridSettings.grid
+SizeMeters === 1 ? 'selected' : ''}>1绫?/option>
+                              <option value="5" ${this.gridSettings.grid
+SizeMeters === 5 ? 'selected' : ''}>5绫?/option>
+                              <option value="10" ${this.gridSettings.gri
+dSizeMeters === 10 ? 'selected' : ''}>10绫?/option>
+                              <option value="25" ${this.gridSettings.gri
+dSizeMeters === 25 ? 'selected' : ''}>25绫?/option>
+                              <option value="50" ${this.gridSettings.gri
+dSizeMeters === 50 ? 'selected' : ''}>50绫?/option>
+                              <option value="100" ${this.gridSettings.gr
+idSizeMeters === 100 ? 'selected' : ''}>100绫?/option>
+                              <option value="250" ${this.gridSettings.gr
+idSizeMeters === 250 ? 'selected' : ''}>250绫?/option>
+                              <option value="500" ${this.gridSettings.gr
+idSizeMeters === 500 ? 'selected' : ''}>500绫?/option>
+                              <option value="1000" ${this.gridSettings.g
+ridSizeMeters === 1000 ? 'selected' : ''}>1000绫?/option>
+                          </select>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>缃戞牸棰滆壊:</label>
+                          <select id="gridColorSelect">
+                              <option value="lightgray" ${this.gridSetti
+ngs.gridColor === 'lightgray' ? 'selected' : ''}>娴呯伆</option>
+                              <option value="gray" ${this.gridSettings.g
+ridColor === 'gray' ? 'selected' : ''}>鐏拌壊</option>
+                              <option value="darkgray" ${this.gridSettin
+gs.gridColor === 'darkgray' ? 'selected' : ''}>娣辩伆</option>
+                              <option value="blue" ${this.gridSettings.g
+ridColor === 'blue' ? 'selected' : ''}>钃濊壊</option>
+                              <option value="green" ${this.gridSettings.
+gridColor === 'green' ? 'selected' : ''}>缁胯壊</option>
+                              <option value="black" ${this.gridSettings.
+gridColor === 'black' ? 'selected' : ''}>榛戣壊</option>
+                          </select>
+                      </div>
+                      
+                      <div class="form-row">
+                          <label>鍧愭爣杞撮鑹?</label>
+                          <select id="axisColorSelect">
+                              <option value="red" ${this.gridSettings.ax
+isColor === 'red' ? 'selected' : ''}>绾㈣壊</option>
+                              <option value="blue" ${this.gridSettings.a
+xisColor === 'blue' ? 'selected' : ''}>钃濊壊</option>
+                              <option value="green" ${this.gridSettings.
+axisColor === 'green' ? 'selected' : ''}>缁胯壊</option>
+                              <option value="orange" ${this.gridSettings
+.axisColor === 'orange' ? 'selected' : ''}>姗欒壊</option>
+                              <option value="purple" ${this.gridSettings
+.axisColor === 'purple' ? 'selected' : ''}>绱壊</option>
+                              <option value="black" ${this.gridSettings.
+axisColor === 'black' ? 'selected' : ''}>榛戣壊</option>
+                          </select>
+                      </div>
+                      
+                      <div class="form-row">
+                          <button onclick="editor.resetGridToOrigin()">閲
+嶇疆鍒板師鐐?/button>
+                          <button onclick="editor.resetGridToDataCenter(
+)">閲嶇疆鍒版暟鎹腑蹇?/button>
+                      </div>
+                      
+                      <div class="dialog-buttons">
+                          <button onclick="editor.applyGridSettings()">搴
+旂敤</button>
+                          <button onclick="editor.closeDialog()">鍏抽棴</bu
+tton>
+                      </div>
+                  `;
+                  
+                  const inputs = dialog.querySelectorAll('input, select'
+);
+
+
