@@ -67,6 +67,18 @@ class OSMEditor {
         this.compassSize = 80;
         this.metersPerDegreeLat = 111320;
 
+    // 瓦片地图设置
+    this.tileEnabled = false;
+    this.tileZoom = 16; // 0-19
+    this.tileUrlTemplate = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    this.tileCache = new Map(); // key: `${z}/${x}/${y}` -> HTMLImageElement
+    // 卫星底图
+    this.satEnabled = false;
+    // 使用 Esri World Imagery 作为示例卫星底图（公共演示用途，遵守其使用条款）
+    // 注意：该服务使用 {z}/{y}/{x} 顺序
+    this.satUrlTemplate = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+    this.satCache = new Map();
+
         this.setupCanvas();
         this.bindEvents();
         this.updateUndoRedoButtons();
@@ -99,6 +111,14 @@ class OSMEditor {
         // 聚焦
         this.canvas.tabIndex = 0;
         this.canvas.focus();
+
+        // 瓦片控件
+        const tileChk = document.getElementById('tileCheck');
+        if (tileChk) tileChk.addEventListener('change', () => this.toggleTiles());
+        const tileZoomInput = document.getElementById('tileZoomInput');
+        if (tileZoomInput) tileZoomInput.addEventListener('input', () => this.onTileZoomChange());
+    const satChk = document.getElementById('satCheck');
+    if (satChk) satChk.addEventListener('change', () => this.toggleSatellite());
     }
 
     // 命令系统
@@ -156,6 +176,24 @@ class OSMEditor {
     }
 
     onCoordSystemChange() { this.coordSystem.coordType = document.getElementById('coordSelect').value; this.redraw(); }
+    // 调整: 切换到 webmercator 时重设合理的 scale
+    onCoordSystemChange(){
+        this.coordSystem.coordType = document.getElementById('coordSelect').value;
+        if (this.coordSystem.coordType === 'webmercator'){
+            // 若启用瓦片, 按当前缩放级别和纬度设置一个合适的像素/米比例
+            if (this.tileEnabled){
+                const lat = this.centerY;
+                this.scale = this.computeScaleForTileZoom(this.tileZoom, lat);
+            } else {
+                this.scale = 1; // 合理默认: 1px/m
+            }
+        } else if (this.coordSystem.coordType === 'geographic'){
+            // 恢复到经纬度常用比例
+            this.scale = 100000;
+        }
+        this.scale = this.clampScale();
+        this.redraw();
+    }
     toggleLabels() { this.showLabels = document.getElementById('labelsCheck').checked; this.redraw(); }
     toggleGrid() { this.gridSettings.showGrid = document.getElementById('gridCheck').checked; this.updateGridStatus(); this.redraw(); }
     toggleCompass() { this.redraw(); }
@@ -302,14 +340,35 @@ class OSMEditor {
 
     // 坐标变换
     canvasToWorld(canvasX, canvasY) {
-        const cx = this.canvas.width/2, cy = this.canvas.height/2; const relX = canvasX - cx, relY = canvasY - cy;
-        const rad = -this.rotation*Math.PI/180; const c=Math.cos(rad), s=Math.sin(rad); const rx = relX*c - relY*s, ry = relX*s + relY*c;
-        const worldX = this.centerX + rx/this.scale; const worldY = this.centerY - ry/this.scale; return [worldX, worldY];
+        const cx = this.canvas.width/2, cy = this.canvas.height/2;
+        const relX = canvasX - cx, relY = canvasY - cy;
+        const rad = -this.rotation*Math.PI/180; const c=Math.cos(rad), s=Math.sin(rad);
+        const rx = relX*c - relY*s, ry = relX*s + relY*c; // 转回未旋转坐标
+        const dx = rx/this.scale, dy = -ry/this.scale;    // 像素 -> 世界单位
+        if (this.coordSystem.coordType === 'webmercator'){
+            const [cmx, cmy] = this.coordSystem.geographicToMercator(this.centerX, this.centerY);
+            const [lon, lat] = this.coordSystem.mercatorToGeographic(cmx + dx, cmy + dy);
+            return [lon, lat];
+        } else {
+            const worldX = this.centerX + dx;
+            const worldY = this.centerY + dy;
+            return [worldX, worldY];
+        }
     }
 
     worldToCanvas(worldX, worldY) {
-        const relX = (worldX - this.centerX) * this.scale; const relY = -(worldY - this.centerY) * this.scale;
-        const rad = this.rotation*Math.PI/180; const c=Math.cos(rad), s=Math.sin(rad); const rx = relX*c - relY*s, ry = relX*s + relY*c;
+        let dx, dy;
+        if (this.coordSystem.coordType === 'webmercator'){
+            const [mx,my] = this.coordSystem.geographicToMercator(worldX, worldY);
+            const [cmx,cmy] = this.coordSystem.geographicToMercator(this.centerX, this.centerY);
+            dx = (mx - cmx) * this.scale;
+            dy = -(my - cmy) * this.scale;
+        } else {
+            dx = (worldX - this.centerX) * this.scale;
+            dy = -(worldY - this.centerY) * this.scale;
+        }
+        const rad = this.rotation*Math.PI/180; const c=Math.cos(rad), s=Math.sin(rad);
+        const rx = dx*c - dy*s, ry = dx*s + dy*c;
         const cx = this.canvas.width/2, cy = this.canvas.height/2; return [cx + rx, cy + ry];
     }
 
@@ -317,9 +376,23 @@ class OSMEditor {
 
     // 状态更新
     updateCoordinateDisplay(worldX, worldY){
-        let text; if (this.coordSystem.coordType==='geographic'){ text = `经度: ${worldX.toFixed(6)}, 纬度: ${worldY.toFixed(6)}`; } else { const [sx,sy]=this.coordSystem.geographicToScene(worldX,worldY); text = `X: ${sx.toFixed(2)}m, Y: ${sy.toFixed(2)}m`; }
+        let text;
+        if (this.coordSystem.coordType==='geographic'){
+            text = `经度: ${worldX.toFixed(6)}, 纬度: ${worldY.toFixed(6)}`;
+        } else if (this.coordSystem.coordType==='scene'){
+            const [sx,sy]=this.coordSystem.geographicToScene(worldX,worldY); text = `X: ${sx.toFixed(2)}m, Y: ${sy.toFixed(2)}m`;
+        } else { // webmercator
+            const [mx,my] = this.coordSystem.geographicToMercator(worldX,worldY); text = `MX: ${mx.toFixed(2)}m, MY: ${my.toFixed(2)}m`;
+        }
         const label = document.getElementById('coordLabel'); if (label) label.textContent = text;
-        const mpd = this.metersPerDegreeLat*Math.cos(worldY*Math.PI/180); const mpp = mpd/this.scale; const ratio = Math.round(mpp); const sl = document.getElementById('scaleLabel'); if (sl) sl.textContent = `1:${ratio}`;
+        let ratio;
+        if (this.coordSystem.coordType==='webmercator'){
+            // 在墨卡托中, world单位为米, scale 为 px/米, 简化显示 1:scale
+            ratio = Math.max(1, Math.round(this.scale));
+        } else {
+            const mpd = this.metersPerDegreeLat*Math.cos(worldY*Math.PI/180); const mpp = mpd/this.scale; ratio = Math.max(1, Math.round(mpp));
+        }
+        const sl = document.getElementById('scaleLabel'); if (sl) sl.textContent = `1:${ratio}`;
     }
 
     updateCreateStatus(){
@@ -335,7 +408,124 @@ class OSMEditor {
         const vl=document.getElementById('viewLabel'); if (vl) vl.innerHTML = info; }
 
     // 绘制
-    redraw(){ this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height); this.ctx.fillStyle='white'; this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height); this.drawGrid(); this.drawOSMData(); this.drawCompass(); this.drawBoxSelect(); this.drawMeasurement(); this.updateViewInfo(); }
+    redraw(){ this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height); this.ctx.fillStyle='white'; this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height); this.drawTiles(); this.drawSatellite(); this.drawGrid(); this.drawOSMData(); this.drawCompass(); this.drawBoxSelect(); this.drawMeasurement(); this.updateViewInfo(); }
+
+    // 瓦片地图
+    toggleTiles(){
+        this.tileEnabled = document.getElementById('tileCheck')?.checked ?? false;
+        this.updateAttribution();
+        this.redraw();
+    }
+    toggleSatellite(){
+        this.satEnabled = document.getElementById('satCheck')?.checked ?? false;
+        this.updateAttribution();
+        this.redraw();
+    }
+
+    updateAttribution(){
+        const attr = document.getElementById('tileAttribution');
+        if (!attr) return;
+        const parts = [];
+        if (this.tileEnabled) parts.push('© OpenStreetMap contributors');
+        if (this.satEnabled) parts.push('Esri, Maxar, Earthstar Geographics');
+        if (parts.length>0){ attr.textContent = parts.join(' | '); attr.style.display = 'block'; }
+        else { attr.style.display = 'none'; }
+    }
+    onTileZoomChange(){ const el=document.getElementById('tileZoomInput'); if (!el) return; let z=parseInt(el.value); if (isNaN(z)) z=this.tileZoom; this.tileZoom = Math.max(0, Math.min(19, z)); if (this.coordSystem.coordType==='webmercator') { const lat=this.centerY; this.scale = this.computeScaleForTileZoom(this.tileZoom, lat); this.scale = this.clampScale(); } this.redraw(); }
+
+    // 依据瓦片缩放与纬度计算像素/米比例（WebMercator）
+    computeScaleForTileZoom(z, lat){ const R = 156543.03392804097; const cos = Math.cos(lat * Math.PI/180) || 1e-6; const metersPerPixel = (R * cos) / Math.pow(2, z); const pxPerMeter = 1 / metersPerPixel; return pxPerMeter; }
+
+    // 不同坐标系下的 scale 合理范围限制
+    clampScale(){ if (this.coordSystem.coordType==='webmercator'){ const MIN=0.0001, MAX=50; return Math.min(MAX, Math.max(MIN, this.scale)); } else { const MIN=1000, MAX=1000000; return Math.min(MAX, Math.max(MIN, this.scale)); } }
+
+    lon2tileX(lon, z){ return (lon + 180) / 360 * Math.pow(2, z); }
+    lat2tileY(lat, z){ const rad = Math.max(Math.min(lat, 85.05112878), -85.05112878) * Math.PI / 180; return (1 - Math.log(Math.tan(rad) + 1/Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z); }
+    tileX2lon(x, z){ return x / Math.pow(2, z) * 360 - 180; }
+    tileY2lat(y, z){ const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z); return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); }
+
+    applyWorldTransform(ctx){
+        const cx=this.canvas.width/2, cy=this.canvas.height/2; const rad=this.rotation*Math.PI/180;
+        ctx.translate(cx, cy);
+        ctx.rotate(rad);
+        ctx.scale(this.scale, -this.scale);
+        if (this.coordSystem.coordType==='webmercator'){
+            const [cmx,cmy] = this.coordSystem.geographicToMercator(this.centerX, this.centerY);
+            ctx.translate(-cmx, -cmy);
+        } else {
+            ctx.translate(-this.centerX, -this.centerY);
+        }
+    }
+
+    drawTiles(){ if (!this.tileEnabled) return; const z=this.tileZoom; // 视图四角经纬度
+        const corners = [ [0,0], [this.canvas.width,0], [this.canvas.width,this.canvas.height], [0,this.canvas.height] ].map(([x,y])=>this.canvasToWorld(x,y));
+        let minLon= Infinity, maxLon= -Infinity, minLat= Infinity, maxLat= -Infinity;
+        for (const [lon,lat] of corners){ if (lon<minLon) minLon=lon; if (lon>maxLon) maxLon=lon; if (lat<minLat) minLat=lat; if (lat>maxLat) maxLat=lat; }
+        // 防止越界
+        minLat = Math.max(minLat, -85.05112878); maxLat = Math.min(maxLat, 85.05112878);
+        // 计算可见瓦片范围
+        let minX = Math.floor(this.lon2tileX(minLon, z));
+        let maxX = Math.floor(this.lon2tileX(maxLon, z));
+        let minY = Math.floor(this.lat2tileY(maxLat, z));
+        let maxY = Math.floor(this.lat2tileY(minLat, z));
+        // 处理跨越国际日期变更线的情况（简单归一化）
+        const maxTiles = Math.pow(2,z);
+        if (maxX - minX > maxTiles/2){ // 说明跨界，交换并使用全范围
+            minX = 0; maxX = maxTiles - 1;
+        }
+        // 限制一次绘制的瓦片数量，避免过多请求
+        const MAX_DRAW = 512;
+        let count = 0;
+    this.ctx.save();
+    this.applyWorldTransform(this.ctx);
+    // 额外本地翻转一次，使图像渲染处于画布的"y向下"语义，便于使用正高度绘制，避免上下镜像
+    this.ctx.scale(1, -1);
+        for (let x=minX; x<=maxX; x++){
+            for (let y=minY; y<=maxY; y++){
+                if (count++ > MAX_DRAW) break;
+                const xWrap = ((x % maxTiles) + maxTiles) % maxTiles; // 循环经度
+                const key = `${z}/${xWrap}/${y}`;
+                const url = this.tileUrlTemplate.replace('{z}', z).replace('{x}', xWrap).replace('{y}', y);
+                let img = this.tileCache.get(key);
+                if (!img){
+                    img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = url;
+                    img.onload = () => { this.tileCache.set(key, img); this.redraw(); };
+                    img.onerror = () => { this.tileCache.set(key, null); };
+                    this.tileCache.set(key, img);
+                }
+                if (img && img.complete && img.naturalWidth>0){
+                    if (this.coordSystem.coordType==='webmercator'){
+                        const lonL = this.tileX2lon(x, z); const lonR = this.tileX2lon(x+1, z);
+                        const latT = this.tileY2lat(y, z); const latB = this.tileY2lat(y+1, z);
+                        const [mxL, myT] = this.coordSystem.geographicToMercator(lonL, latT);
+                        const [mxR, myB] = this.coordSystem.geographicToMercator(lonR, latB);
+                        const dx = mxR - mxL; const dy = myT - myB; // 正值
+                        this.ctx.drawImage(img, mxL, -myT, dx, dy);
+                    } else {
+                        const lonL = this.tileX2lon(x, z);
+                        const lonR = this.tileX2lon(x+1, z);
+                        const latT = this.tileY2lat(y, z);
+                        const latB = this.tileY2lat(y+1, z);
+                        const dx = lonR - lonL;
+                        const dy = latT - latB; // 正值
+                        this.ctx.drawImage(img, lonL, -latT, dx, dy);
+                    }
+                }
+            }
+        }
+        this.ctx.restore();
+    }
+
+    // 卫星底图绘制（逻辑与瓦片一致，支持叠加不同源）
+    drawSatellite(){ if (!this.satEnabled) return; const z=this.tileZoom; const corners = [ [0,0], [this.canvas.width,0], [this.canvas.width,this.canvas.height], [0,this.canvas.height] ].map(([x,y])=>this.canvasToWorld(x,y)); let minLon= Infinity, maxLon= -Infinity, minLat= Infinity, maxLat= -Infinity; for (const [lon,lat] of corners){ if (lon<minLon) minLon=lon; if (lon>maxLon) maxLon=lon; if (lat<minLat) minLat=lat; if (lat>maxLat) maxLat=lat; } minLat = Math.max(minLat, -85.05112878); maxLat = Math.min(maxLat, 85.05112878); let minX = Math.floor(this.lon2tileX(minLon, z)); let maxX = Math.floor(this.lon2tileX(maxLon, z)); let minY = Math.floor(this.lat2tileY(maxLat, z)); let maxY = Math.floor(this.lat2tileY(minLat, z)); const maxTiles = Math.pow(2,z); if (maxX - minX > maxTiles/2){ minX = 0; maxX = maxTiles - 1; } const MAX_DRAW = 512; let count = 0; this.ctx.save(); this.applyWorldTransform(this.ctx); this.ctx.scale(1,-1); for (let x=minX; x<=maxX; x++){ for (let y=minY; y<=maxY; y++){ if (count++ > MAX_DRAW) break; const xWrap = ((x % maxTiles) + maxTiles) % maxTiles; const key = `sat:${z}/${xWrap}/${y}`; // Esri 需要 {z}/{y}/{x}
+            const url = this.satUrlTemplate.replace('{z}', z).replace('{x}', xWrap).replace('{y}', y);
+            let img = this.satCache.get(key);
+            if (!img){ img = new Image(); img.crossOrigin = 'anonymous'; img.src = url; img.onload = () => { this.satCache.set(key, img); this.redraw(); }; img.onerror = () => { this.satCache.set(key, null); }; this.satCache.set(key, img); }
+            if (img && img.complete && img.naturalWidth>0){ if (this.coordSystem.coordType==='webmercator'){ const lonL = this.tileX2lon(x, z); const lonR = this.tileX2lon(x+1, z); const latT = this.tileY2lat(y, z); const latB = this.tileY2lat(y+1, z); const [mxL, myT] = this.coordSystem.geographicToMercator(lonL, latT); const [mxR, myB] = this.coordSystem.geographicToMercator(lonR, latB); const dx = mxR - mxL; const dy = myT - myB; this.ctx.drawImage(img, mxL, -myT, dx, dy); } else { const lonL = this.tileX2lon(x, z); const lonR = this.tileX2lon(x+1, z); const latT = this.tileY2lat(y, z); const latB = this.tileY2lat(y+1, z); const dx = lonR - lonL; const dy = latT - latB; this.ctx.drawImage(img, lonL, -latT, dx, dy); } }
+        } }
+        this.ctx.restore(); }
 
     drawGrid(){ if(!this.gridSettings.showGrid) return; const W=this.canvas.width, H=this.canvas.height; const [ox,oy]=this.worldToCanvas(this.gridSettings.originX,this.gridSettings.originY); const mpd=this.metersPerDegreeLat*Math.cos(this.centerY*Math.PI/180); const ppm=this.scale/mpd; let gs=this.gridSettings.gridSizeMeters*ppm; if (gs<10){ const mul=Math.max(1, Math.floor(20/gs)); gs*=mul; } else if (gs>300){ const div=Math.max(1, Math.floor(gs/100)); gs/=div; }
         this.ctx.strokeStyle=this.gridSettings.gridColor; this.ctx.lineWidth=1; let x=ox%gs, c=0; while(x<W && c<200){ this.ctx.beginPath(); this.ctx.moveTo(x,0); this.ctx.lineTo(x,H); this.ctx.stroke(); x+=gs; c++; } x=ox%gs - gs; c=0; while(x>=0 && c<200){ this.ctx.beginPath(); this.ctx.moveTo(x,0); this.ctx.lineTo(x,H); this.ctx.stroke(); x-=gs; c++; }
@@ -344,7 +534,7 @@ class OSMEditor {
         if (0<=ox && ox<=W && 0<=oy && oy<=H){ this.ctx.fillStyle=this.gridSettings.axisColor; this.ctx.beginPath(); this.ctx.arc(ox,oy,5,0,2*Math.PI); this.ctx.fill(); if (this.gridSettings.showCoordinates){ let t; if (this.coordSystem.coordType==='geographic'){ t = `(${this.gridSettings.originX.toFixed(3)},${this.gridSettings.originY.toFixed(3)})`; } else { const [sx,sy]=this.coordSystem.geographicToScene(this.gridSettings.originX,this.gridSettings.originY); t = `(${sx.toFixed(1)}m,${sy.toFixed(1)}m)`; } this.ctx.fillStyle=this.gridSettings.axisColor; this.ctx.font='9px Arial'; this.ctx.fillText(t, ox+15, oy-15); } }
     }
 
-    drawCompass(){ const chk=document.getElementById('compassCheck'); if (!chk || !chk.checked) return; const cx=this.canvas.width - this.compassSize - 20; const cy=20 + this.compassSize/2; const r=this.compassSize/2; this.ctx.strokeStyle='black'; this.ctx.lineWidth=2; this.ctx.fillStyle='white'; this.ctx.beginPath(); this.ctx.arc(cx,cy,r,0,2*Math.PI); this.ctx.fill(); this.ctx.stroke(); const dirs=[[0,'N'],[30,''],[60,''],[90,'E'],[120,''],[150,''],[180,'S'],[210,''],[240,''],[270,'W'],[300,''],[330,'']]; for (const [a,l] of dirs){ const ang=(a-90)*Math.PI/180; const x1=cx+(r-10)*Math.cos(ang), y1=cy+(r-10)*Math.sin(ang); const x2=cx+r*Math.cos(ang), y2=cy+r*Math.sin(ang); this.ctx.strokeStyle='black'; this.ctx.lineWidth=l?2:1; this.ctx.beginPath(); this.ctx.moveTo(x1,y1); this.ctx.lineTo(x2,y2); this.ctx.stroke(); if (l){ const tx=cx+(r+12)*Math.cos(ang), ty=cy+(r+12)*Math.sin(ang); this.ctx.fillStyle='black'; this.ctx.font='bold 10px Arial'; this.ctx.textAlign='center'; this.ctx.textBaseline='middle'; this.ctx.fillText(l,tx,ty); } } const na=(-this.rotation-90)*Math.PI/180; const nx=cx+(r-5)*Math.cos(na), ny=cy+(r-5)*Math.sin(na); this.ctx.strokeStyle='red'; this.ctx.lineWidth=3; this.ctx.beginPath(); this.ctx.moveTo(cx,cy); this.ctx.lineTo(nx,ny); this.ctx.stroke(); const s=8, a1=na+Math.PI*5/6, a2=na+Math.PI*7/6; const ax1=nx+s*Math.cos(a1), ay1=ny+s*Math.sin(a1), ax2=nx+s*Math.cos(a2), ay2=ny+s*Math.sin(a2); this.ctx.fillStyle='red'; this.ctx.beginPath(); this.ctx.moveTo(nx,ny); this.ctx.lineTo(ax1,ay1); this.ctx.lineTo(ax2,ay2); this.ctx.closePath(); this.ctx.fill(); this.ctx.fillStyle='black'; this.ctx.beginPath(); this.ctx.arc(cx,cy,3,0,2*Math.PI); this.ctx.fill(); this.ctx.fillStyle='black'; this.ctx.font='9px Arial'; this.ctx.textAlign='center'; this.ctx.fillText(`旋转: ${Math.round(this.rotation)}°`, cx, cy + r + 20); this.ctx.fillStyle='red'; this.ctx.font='8px Arial'; this.ctx.fillText('红色箭头指向北', cx, cy + r + 35); }
+    drawCompass(){ const chk=document.getElementById('compassCheck'); if (!chk || !chk.checked) return; const cx=this.canvas.width - this.compassSize - 20; const cy=20 + this.compassSize/2; const r=this.compassSize/2; this.ctx.strokeStyle='black'; this.ctx.lineWidth=2; this.ctx.fillStyle='white'; this.ctx.beginPath(); this.ctx.arc(cx,cy,r,0,2*Math.PI); this.ctx.fill(); this.ctx.stroke(); const dirs=[[0,'N'],[30,''],[60,''],[90,'E'],[120,''],[150,''],[180,'S'],[210,''],[240,''],[270,'W'],[300,''],[330,'']]; for (const [a,l] of dirs){ const ang=(a-90)*Math.PI/180; const x1=cx+(r-10)*Math.cos(ang), y1=cy+(r-10)*Math.sin(ang); const x2=cx+r*Math.cos(ang), y2=cy+r*Math.sin(ang); this.ctx.strokeStyle='black'; this.ctx.lineWidth=l?2:1; this.ctx.beginPath(); this.ctx.moveTo(x1,y1); this.ctx.lineTo(x2,y2); this.ctx.stroke(); if (l){ const tx=cx+(r+12)*Math.cos(ang), ty=cy+(r+12)*Math.sin(ang); this.ctx.fillStyle='black'; this.ctx.font='bold 10px Arial'; this.ctx.textAlign='center'; this.ctx.textBaseline='middle'; this.ctx.fillText(l,tx,ty); } } const na=(this.rotation-90)*Math.PI/180; const nx=cx+(r-5)*Math.cos(na), ny=cy+(r-5)*Math.sin(na); this.ctx.strokeStyle='red'; this.ctx.lineWidth=3; this.ctx.beginPath(); this.ctx.moveTo(cx,cy); this.ctx.lineTo(nx,ny); this.ctx.stroke(); const s=8, a1=na+Math.PI*5/6, a2=na+Math.PI*7/6; const ax1=nx+s*Math.cos(a1), ay1=ny+s*Math.sin(a1), ax2=nx+s*Math.cos(a2), ay2=ny+s*Math.sin(a2); this.ctx.fillStyle='red'; this.ctx.beginPath(); this.ctx.moveTo(nx,ny); this.ctx.lineTo(ax1,ay1); this.ctx.lineTo(ax2,ay2); this.ctx.closePath(); this.ctx.fill(); this.ctx.fillStyle='black'; this.ctx.beginPath(); this.ctx.arc(cx,cy,3,0,2*Math.PI); this.ctx.fill(); this.ctx.fillStyle='black'; this.ctx.font='9px Arial'; this.ctx.textAlign='center'; this.ctx.fillText(`旋转: ${Math.round(this.rotation)}°`, cx, cy + r + 20); this.ctx.fillStyle='red'; this.ctx.font='8px Arial'; this.ctx.fillText('红色箭头指向北', cx, cy + r + 35); }
 
     drawOSMData(){ const showGeom=this.renderMode==='geometry'||this.renderMode==='both'; const showRend=this.renderMode==='rendered'||this.renderMode==='both'; const show3D=this.renderMode==='3d';
         for (const [wayId, wayData] of this.ways){ const nodeIds=wayData.nodes; if (nodeIds.length<2) continue; const pts=[]; for (const nid of nodeIds){ const node=this.nodes.get(nid); if(!node) continue; const [x,y]=this.worldToCanvas(node.lon,node.lat); pts.push([x,y]); }
@@ -508,14 +698,18 @@ class OSMEditor {
     onMouseMove(e){ const rect=this.canvas.getBoundingClientRect(); const cx=e.clientX-rect.left, cy=e.clientY-rect.top; const [wx,wy]=this.canvasToWorld(cx,cy); this.updateCoordinateDisplay(wx,wy); if (!this.dragStart) return; if (this.mode==='box_select' && this.boxSelecting){ this.updateBoxSelect(cx,cy); return; }
         // 平移视图
         if (this.panning && !this.draggingNode){
-            const dx = cx - this.dragStart[0];
-            const dy = cy - this.dragStart[1];
-            const rad = this.rotation * Math.PI/180;
-            const cR = Math.cos(rad);
-            const sR = Math.sin(rad);
-            // 将画布位移转换为世界坐标中心位移
-            this.centerX -= (dx * cR + dy * sR) / this.scale;
-            this.centerY += (-dx * sR + dy * cR) / this.scale;
+            const dxp = cx - this.dragStart[0];
+            const dyp = cy - this.dragStart[1];
+            const rad = this.rotation * Math.PI/180; const cR = Math.cos(rad); const sR = Math.sin(rad);
+            const ux = (dxp * cR + dyp * sR) / this.scale; // 世界单位的dx
+            const uy = (-dxp * sR + dyp * cR) / this.scale; // 世界单位的dy
+            if (this.coordSystem.coordType==='webmercator'){
+                const [cmx,cmy] = this.coordSystem.geographicToMercator(this.centerX, this.centerY);
+                const [lon,lat] = this.coordSystem.mercatorToGeographic(cmx - ux, cmy + uy);
+                this.centerX = lon; this.centerY = lat;
+            } else {
+                this.centerX -= ux; this.centerY += uy;
+            }
             this.dragStart = [cx, cy];
             this.redraw();
             return;
@@ -528,7 +722,7 @@ class OSMEditor {
         this.dragStart=null; this.draggingNode=false; this.nodeStartPos=null; if (this.panning){ this.panning=false; this.onModeChange(); }
     }
 
-    onScroll(e){ e.preventDefault(); const factor=e.deltaY>0?0.9:1.1; this.scale*=factor; this.scale=Math.max(1000, Math.min(1000000, this.scale)); this.redraw(); this.updateViewInfo(); }
+    onScroll(e){ e.preventDefault(); const factor=e.deltaY>0?0.9:1.1; this.scale*=factor; this.scale=this.clampScale(); this.redraw(); this.updateViewInfo(); }
     onDoubleClick(e){ /* 保留 */ }
 
     onKey(e){ if (e.key==='Delete'){ this.deleteSelected(); return; } if (e.ctrlKey && e.key==='z'){ this.undo(); return; } if (e.ctrlKey && e.key==='y'){ this.redo(); return; } if (e.ctrlKey && e.key==='a'){ e.preventDefault(); this.selectAllPolygons(); return; } if (e.key==='Escape'){ this.cancelCreation(); this.clearSelection(); return; } if (this.renderMode==='3d' && (e.key==='h' || e.key==='H')){ this.editBuildingHeight && this.editBuildingHeight(); return; } }

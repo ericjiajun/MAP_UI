@@ -221,3 +221,17 @@ button:disabled {
     font-size: 10px;
     min-width: 30px;
 }
+
+/* 瓦片地图归属信息 */
+.tile-attribution {
+    position: absolute;
+    left: 6px;
+    bottom: 4px;
+    background: rgba(255,255,255,0.8);
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-size: 10px;
+    color: #333;
+    pointer-events: none;
+}

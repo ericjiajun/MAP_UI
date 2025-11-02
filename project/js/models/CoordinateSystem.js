@@ -5,7 +5,7 @@
 class CoordinateSystem {
     constructor() {
         // 坐标系类型: "geographic" 或 "scene"
-        this.coordType = "geographic";
+        this.coordType = "geographic"; // 可选: geographic | scene | webmercator
         
         // 场景坐标系原点的地理坐标
         this.sceneOriginLon = 0.0;
@@ -57,6 +57,33 @@ class CoordinateSystem {
      */
     getTypeDescription() {
         return this.coordType === "geographic" ? "地理坐标" : "场景坐标";
+    }
+
+    /**
+     * Web Mercator 投影: 地理坐标 -> 墨卡托米 (EPSG:3857)
+     * @param {number} lon 经度
+     * @param {number} lat 纬度
+     * @returns {[number,number]} [mx,my] 单位:米
+     */
+    geographicToMercator(lon, lat) {
+        const R = 6378137.0;
+        const clampedLat = Math.max(Math.min(lat, 85.05112878), -85.05112878);
+        const mx = R * (lon * Math.PI / 180);
+        const my = R * Math.log(Math.tan(Math.PI / 4 + (clampedLat * Math.PI / 180) / 2));
+        return [mx, my];
+    }
+
+    /**
+     * Web Mercator 投影: 墨卡托米 -> 地理坐标
+     * @param {number} mx 墨卡托X(米)
+     * @param {number} my 墨卡托Y(米)
+     * @returns {[number,number]} [lon,lat]
+     */
+    mercatorToGeographic(mx, my) {
+        const R = 6378137.0;
+        const lon = (mx / R) * 180 / Math.PI;
+        const lat = (2 * Math.atan(Math.exp(my / R)) - Math.PI / 2) * 180 / Math.PI;
+        return [lon, lat];
     }
 }
 

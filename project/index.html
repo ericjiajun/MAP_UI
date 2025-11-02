@@ -59,6 +59,7 @@
                     <select id="coordSelect" onchange="editor.onCoordSystemChange()">
                         <option value="geographic">经纬度</option>
                         <option value="scene">场景坐标</option>
+                        <option value="webmercator">WebMercator</option>
                     </select>
                     <button onclick="editor.setSceneOrigin()">设原点</button>
                     <button onclick="editor.useCurrentCenterAsOrigin()">用中心</button>
@@ -83,6 +84,16 @@
                     <label for="gridCheck">网格</label>
                     <input type="checkbox" id="compassCheck" onchange="editor.toggleCompass()" checked>
                     <label for="compassCheck">指南针</label>
+                </div>
+
+                <div class="toolbar-group">
+                    <label>底图</label>
+                    <input type="checkbox" id="tileCheck" onchange="editor.toggleTiles()">
+                    <label for="tileCheck">OSM</label>
+                    <input type="checkbox" id="satCheck" onchange="editor.toggleSatellite()">
+                    <label for="satCheck">卫星</label>
+                    <label>缩放</label>
+                    <input type="number" id="tileZoomInput" min="0" max="19" value="16" style="width:50px" oninput="editor.onTileZoomChange()">
                 </div>
                 
                 <div class="toolbar-group">
@@ -127,6 +138,7 @@
             <!-- 画布区域 -->
             <div class="canvas-container">
                 <canvas id="mapCanvas"></canvas>
+                <div id="tileAttribution" class="tile-attribution" style="display:none;">© OpenStreetMap contributors</div>
             </div>
             
             <!-- 属性面板 -->
