@@ -11,6 +11,10 @@ import GridControlPanelDialog from './ui/GridControlPanelDialog.js';
 import ThreedSettingsDialog from './ui/ThreedSettingsDialog.js';
 import { openHeightEditor, openColorEditor } from './ui/BuildingEditors.js';
 import MapCalibrationDialog from './ui/MapCalibrationDialog.js';
+import CoordinateImportDialog from './ui/CoordinateImportDialog.js';
+import ManualCoordinateDialog from './ui/ManualCoordinateDialog.js';
+import TranslateCoordinatesDialog from './ui/TranslateCoordinatesDialog.js';
+import BasemapManager from './layers/BasemapManager.js';
 
 class OSMEditor {
     constructor() {
@@ -67,17 +71,8 @@ class OSMEditor {
         this.compassSize = 80;
         this.metersPerDegreeLat = 111320;
 
-    // 瓦片地图设置
-    this.tileEnabled = false;
-    this.tileZoom = 16; // 0-19
-    this.tileUrlTemplate = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-    this.tileCache = new Map(); // key: `${z}/${x}/${y}` -> HTMLImageElement
-    // 卫星底图
-    this.satEnabled = false;
-    // 使用 Esri World Imagery 作为示例卫星底图（公共演示用途，遵守其使用条款）
-    // 注意：该服务使用 {z}/{y}/{x} 顺序
-    this.satUrlTemplate = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-    this.satCache = new Map();
+        // 统一的底图管理器
+        this.basemap = new BasemapManager(this);
 
         this.setupCanvas();
         this.bindEvents();
@@ -180,10 +175,12 @@ class OSMEditor {
     onCoordSystemChange(){
         this.coordSystem.coordType = document.getElementById('coordSelect').value;
         if (this.coordSystem.coordType === 'webmercator'){
-            // 若启用瓦片, 按当前缩放级别和纬度设置一个合适的像素/米比例
-            if (this.tileEnabled){
+            // 若任一底图启用, 按当前缩放级别和纬度设置一个合适的像素/米比例
+            const anyEnabled = (this.basemap && this.basemap.isAnyEnabled && this.basemap.isAnyEnabled());
+            if (anyEnabled){
                 const lat = this.centerY;
-                this.scale = this.computeScaleForTileZoom(this.tileZoom, lat);
+                const z = (this.basemap && this.basemap.getZoom) ? this.basemap.getZoom() : 16;
+                this.scale = this.computeScaleForTileZoom(z, lat);
             } else {
                 this.scale = 1; // 合理默认: 1px/m
             }
@@ -408,41 +405,40 @@ class OSMEditor {
         const vl=document.getElementById('viewLabel'); if (vl) vl.innerHTML = info; }
 
     // 绘制
-    redraw(){ this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height); this.ctx.fillStyle='white'; this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height); this.drawTiles(); this.drawSatellite(); this.drawGrid(); this.drawOSMData(); this.drawCompass(); this.drawBoxSelect(); this.drawMeasurement(); this.updateViewInfo(); }
+    redraw(){ this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height); this.ctx.fillStyle='white'; this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height); this.basemap.draw(this.ctx); this.drawGrid(); this.drawOSMData(); this.drawCompass(); this.drawBoxSelect(); this.drawMeasurement(); this.updateViewInfo(); }
 
     // 瓦片地图
-    toggleTiles(){
-        this.tileEnabled = document.getElementById('tileCheck')?.checked ?? false;
-        this.updateAttribution();
-        this.redraw();
-    }
-    toggleSatellite(){
-        this.satEnabled = document.getElementById('satCheck')?.checked ?? false;
-        this.updateAttribution();
-        this.redraw();
-    }
+    toggleTiles(){ const enabled = document.getElementById('tileCheck')?.checked ?? false; this.basemap.setOSMEnabled(enabled); this.updateAttribution(); this.redraw(); }
+    toggleSatellite(){ const enabled = document.getElementById('satCheck')?.checked ?? false; this.basemap.setSatelliteEnabled(enabled); this.updateAttribution(); this.redraw(); }
 
     updateAttribution(){
         const attr = document.getElementById('tileAttribution');
         if (!attr) return;
-        const parts = [];
-        if (this.tileEnabled) parts.push('© OpenStreetMap contributors');
-        if (this.satEnabled) parts.push('Esri, Maxar, Earthstar Geographics');
-        if (parts.length>0){ attr.textContent = parts.join(' | '); attr.style.display = 'block'; }
+        const text = this.basemap.getAttribution();
+        if (text && text.length>0){ attr.textContent = text; attr.style.display = 'block'; }
         else { attr.style.display = 'none'; }
     }
-    onTileZoomChange(){ const el=document.getElementById('tileZoomInput'); if (!el) return; let z=parseInt(el.value); if (isNaN(z)) z=this.tileZoom; this.tileZoom = Math.max(0, Math.min(19, z)); if (this.coordSystem.coordType==='webmercator') { const lat=this.centerY; this.scale = this.computeScaleForTileZoom(this.tileZoom, lat); this.scale = this.clampScale(); } this.redraw(); }
+    onTileZoomChange(){ const el=document.getElementById('tileZoomInput'); if (!el) return; let z=parseInt(el.value); if (isNaN(z)) z=this.basemap.getZoom(); z = Math.max(0, Math.min(19, z)); this.basemap.setZoom(z); if (this.coordSystem.coordType==='webmercator') { const lat=this.centerY; this.scale = this.computeScaleForTileZoom(this.basemap.getZoom(), lat); this.scale = this.clampScale(); } this.redraw(); }
 
     // 依据瓦片缩放与纬度计算像素/米比例（WebMercator）
     computeScaleForTileZoom(z, lat){ const R = 156543.03392804097; const cos = Math.cos(lat * Math.PI/180) || 1e-6; const metersPerPixel = (R * cos) / Math.pow(2, z); const pxPerMeter = 1 / metersPerPixel; return pxPerMeter; }
 
     // 不同坐标系下的 scale 合理范围限制
-    clampScale(){ if (this.coordSystem.coordType==='webmercator'){ const MIN=0.0001, MAX=50; return Math.min(MAX, Math.max(MIN, this.scale)); } else { const MIN=1000, MAX=1000000; return Math.min(MAX, Math.max(MIN, this.scale)); } }
+    clampScale(){ 
+        if (this.coordSystem.coordType==='webmercator'){ 
+            // WebMercator: 像素/米
+            // MIN: 0.00001 (1像素=100km) MAX: 10000 (10000像素=1米，厘米级精度)
+            const MIN=0.00001, MAX=10000; 
+            return Math.min(MAX, Math.max(MIN, this.scale)); 
+        } else { 
+            // Geographic: 像素/度
+            // MIN: 10 (极小缩放) MAX: 100000000 (超高精度，支持毫米级)
+            const MIN=10, MAX=100000000; 
+            return Math.min(MAX, Math.max(MIN, this.scale)); 
+        } 
+    }
 
-    lon2tileX(lon, z){ return (lon + 180) / 360 * Math.pow(2, z); }
-    lat2tileY(lat, z){ const rad = Math.max(Math.min(lat, 85.05112878), -85.05112878) * Math.PI / 180; return (1 - Math.log(Math.tan(rad) + 1/Math.cos(rad)) / Math.PI) / 2 * Math.pow(2, z); }
-    tileX2lon(x, z){ return x / Math.pow(2, z) * 360 - 180; }
-    tileY2lat(y, z){ const n = Math.PI - 2 * Math.PI * y / Math.pow(2, z); return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); }
+    // 瓦片工具方法已迁移至 BasemapManager
 
     applyWorldTransform(ctx){
         const cx=this.canvas.width/2, cy=this.canvas.height/2; const rad=this.rotation*Math.PI/180;
@@ -457,75 +453,9 @@ class OSMEditor {
         }
     }
 
-    drawTiles(){ if (!this.tileEnabled) return; const z=this.tileZoom; // 视图四角经纬度
-        const corners = [ [0,0], [this.canvas.width,0], [this.canvas.width,this.canvas.height], [0,this.canvas.height] ].map(([x,y])=>this.canvasToWorld(x,y));
-        let minLon= Infinity, maxLon= -Infinity, minLat= Infinity, maxLat= -Infinity;
-        for (const [lon,lat] of corners){ if (lon<minLon) minLon=lon; if (lon>maxLon) maxLon=lon; if (lat<minLat) minLat=lat; if (lat>maxLat) maxLat=lat; }
-        // 防止越界
-        minLat = Math.max(minLat, -85.05112878); maxLat = Math.min(maxLat, 85.05112878);
-        // 计算可见瓦片范围
-        let minX = Math.floor(this.lon2tileX(minLon, z));
-        let maxX = Math.floor(this.lon2tileX(maxLon, z));
-        let minY = Math.floor(this.lat2tileY(maxLat, z));
-        let maxY = Math.floor(this.lat2tileY(minLat, z));
-        // 处理跨越国际日期变更线的情况（简单归一化）
-        const maxTiles = Math.pow(2,z);
-        if (maxX - minX > maxTiles/2){ // 说明跨界，交换并使用全范围
-            minX = 0; maxX = maxTiles - 1;
-        }
-        // 限制一次绘制的瓦片数量，避免过多请求
-        const MAX_DRAW = 512;
-        let count = 0;
-    this.ctx.save();
-    this.applyWorldTransform(this.ctx);
-    // 额外本地翻转一次，使图像渲染处于画布的"y向下"语义，便于使用正高度绘制，避免上下镜像
-    this.ctx.scale(1, -1);
-        for (let x=minX; x<=maxX; x++){
-            for (let y=minY; y<=maxY; y++){
-                if (count++ > MAX_DRAW) break;
-                const xWrap = ((x % maxTiles) + maxTiles) % maxTiles; // 循环经度
-                const key = `${z}/${xWrap}/${y}`;
-                const url = this.tileUrlTemplate.replace('{z}', z).replace('{x}', xWrap).replace('{y}', y);
-                let img = this.tileCache.get(key);
-                if (!img){
-                    img = new Image();
-                    img.crossOrigin = 'anonymous';
-                    img.src = url;
-                    img.onload = () => { this.tileCache.set(key, img); this.redraw(); };
-                    img.onerror = () => { this.tileCache.set(key, null); };
-                    this.tileCache.set(key, img);
-                }
-                if (img && img.complete && img.naturalWidth>0){
-                    if (this.coordSystem.coordType==='webmercator'){
-                        const lonL = this.tileX2lon(x, z); const lonR = this.tileX2lon(x+1, z);
-                        const latT = this.tileY2lat(y, z); const latB = this.tileY2lat(y+1, z);
-                        const [mxL, myT] = this.coordSystem.geographicToMercator(lonL, latT);
-                        const [mxR, myB] = this.coordSystem.geographicToMercator(lonR, latB);
-                        const dx = mxR - mxL; const dy = myT - myB; // 正值
-                        this.ctx.drawImage(img, mxL, -myT, dx, dy);
-                    } else {
-                        const lonL = this.tileX2lon(x, z);
-                        const lonR = this.tileX2lon(x+1, z);
-                        const latT = this.tileY2lat(y, z);
-                        const latB = this.tileY2lat(y+1, z);
-                        const dx = lonR - lonL;
-                        const dy = latT - latB; // 正值
-                        this.ctx.drawImage(img, lonL, -latT, dx, dy);
-                    }
-                }
-            }
-        }
-        this.ctx.restore();
-    }
+    // 底图绘制已迁移至 BasemapManager
 
-    // 卫星底图绘制（逻辑与瓦片一致，支持叠加不同源）
-    drawSatellite(){ if (!this.satEnabled) return; const z=this.tileZoom; const corners = [ [0,0], [this.canvas.width,0], [this.canvas.width,this.canvas.height], [0,this.canvas.height] ].map(([x,y])=>this.canvasToWorld(x,y)); let minLon= Infinity, maxLon= -Infinity, minLat= Infinity, maxLat= -Infinity; for (const [lon,lat] of corners){ if (lon<minLon) minLon=lon; if (lon>maxLon) maxLon=lon; if (lat<minLat) minLat=lat; if (lat>maxLat) maxLat=lat; } minLat = Math.max(minLat, -85.05112878); maxLat = Math.min(maxLat, 85.05112878); let minX = Math.floor(this.lon2tileX(minLon, z)); let maxX = Math.floor(this.lon2tileX(maxLon, z)); let minY = Math.floor(this.lat2tileY(maxLat, z)); let maxY = Math.floor(this.lat2tileY(minLat, z)); const maxTiles = Math.pow(2,z); if (maxX - minX > maxTiles/2){ minX = 0; maxX = maxTiles - 1; } const MAX_DRAW = 512; let count = 0; this.ctx.save(); this.applyWorldTransform(this.ctx); this.ctx.scale(1,-1); for (let x=minX; x<=maxX; x++){ for (let y=minY; y<=maxY; y++){ if (count++ > MAX_DRAW) break; const xWrap = ((x % maxTiles) + maxTiles) % maxTiles; const key = `sat:${z}/${xWrap}/${y}`; // Esri 需要 {z}/{y}/{x}
-            const url = this.satUrlTemplate.replace('{z}', z).replace('{x}', xWrap).replace('{y}', y);
-            let img = this.satCache.get(key);
-            if (!img){ img = new Image(); img.crossOrigin = 'anonymous'; img.src = url; img.onload = () => { this.satCache.set(key, img); this.redraw(); }; img.onerror = () => { this.satCache.set(key, null); }; this.satCache.set(key, img); }
-            if (img && img.complete && img.naturalWidth>0){ if (this.coordSystem.coordType==='webmercator'){ const lonL = this.tileX2lon(x, z); const lonR = this.tileX2lon(x+1, z); const latT = this.tileY2lat(y, z); const latB = this.tileY2lat(y+1, z); const [mxL, myT] = this.coordSystem.geographicToMercator(lonL, latT); const [mxR, myB] = this.coordSystem.geographicToMercator(lonR, latB); const dx = mxR - mxL; const dy = myT - myB; this.ctx.drawImage(img, mxL, -myT, dx, dy); } else { const lonL = this.tileX2lon(x, z); const lonR = this.tileX2lon(x+1, z); const latT = this.tileY2lat(y, z); const latB = this.tileY2lat(y+1, z); const dx = lonR - lonL; const dy = latT - latB; this.ctx.drawImage(img, lonL, -latT, dx, dy); } }
-        } }
-        this.ctx.restore(); }
+    // 卫星底图绘制已迁移至 BasemapManager
 
     drawGrid(){ if(!this.gridSettings.showGrid) return; const W=this.canvas.width, H=this.canvas.height; const [ox,oy]=this.worldToCanvas(this.gridSettings.originX,this.gridSettings.originY); const mpd=this.metersPerDegreeLat*Math.cos(this.centerY*Math.PI/180); const ppm=this.scale/mpd; let gs=this.gridSettings.gridSizeMeters*ppm; if (gs<10){ const mul=Math.max(1, Math.floor(20/gs)); gs*=mul; } else if (gs>300){ const div=Math.max(1, Math.floor(gs/100)); gs/=div; }
         this.ctx.strokeStyle=this.gridSettings.gridColor; this.ctx.lineWidth=1; let x=ox%gs, c=0; while(x<W && c<200){ this.ctx.beginPath(); this.ctx.moveTo(x,0); this.ctx.lineTo(x,H); this.ctx.stroke(); x+=gs; c++; } x=ox%gs - gs; c=0; while(x>=0 && c<200){ this.ctx.beginPath(); this.ctx.moveTo(x,0); this.ctx.lineTo(x,H); this.ctx.stroke(); x-=gs; c++; }
@@ -622,7 +552,23 @@ class OSMEditor {
     // 视图
     resetView(){ this.scale=100000; this.centerX=0; this.centerY=0; this.rotation=0; this.redraw(); this.updateViewInfo(); }
 
-    fitToWindow(){ if (this.nodes.size===0) return; const lons=Array.from(this.nodes.values()).map(n=>n.lon); const lats=Array.from(this.nodes.values()).map(n=>n.lat); const minLon=Math.min(...lons), maxLon=Math.max(...lons), minLat=Math.min(...lats), maxLat=Math.max(...lats); this.centerX=(minLon+maxLon)/2; this.centerY=(minLat+maxLat)/2; const [x1,y1]=this.worldToCanvas(minLon,minLat); const [x2,y2]=this.worldToCanvas(maxLon,maxLat); const w=Math.abs(x2-x1), h=Math.abs(y2-y1); const margin=40; const sx=(this.canvas.width-margin)/Math.max(w,1); const sy=(this.canvas.height-margin)/Math.max(h,1); this.scale*=Math.min(sx,sy); this.redraw(); }
+    fitToWindow(){ 
+        if (this.nodes.size===0) return; 
+        const lons=Array.from(this.nodes.values()).map(n=>n.lon); 
+        const lats=Array.from(this.nodes.values()).map(n=>n.lat); 
+        const minLon=Math.min(...lons), maxLon=Math.max(...lons), minLat=Math.min(...lats), maxLat=Math.max(...lats); 
+        this.centerX=(minLon+maxLon)/2; 
+        this.centerY=(minLat+maxLat)/2; 
+        const [x1,y1]=this.worldToCanvas(minLon,minLat); 
+        const [x2,y2]=this.worldToCanvas(maxLon,maxLat); 
+        const w=Math.abs(x2-x1), h=Math.abs(y2-y1); 
+        const margin=40; 
+        const sx=(this.canvas.width-margin)/Math.max(w,1); 
+        const sy=(this.canvas.height-margin)/Math.max(h,1); 
+        this.scale*=Math.min(sx,sy); 
+        this.scale=this.clampScale(); // 应用缩放限制
+        this.redraw(); 
+    }
 
     rotateView(angle){ this.rotation=(this.rotation+angle+360)%360; this.redraw(); }
 
@@ -661,6 +607,21 @@ class OSMEditor {
     // 地图校正（设置场景原点）
     showMapCalibration(){
         new MapCalibrationDialog(this);
+    }
+
+    // 坐标导入对话框
+    showCoordinateImport(){
+        new CoordinateImportDialog(this);
+    }
+
+    // 手动输入坐标对话框
+    showManualCoordinate(){
+        new ManualCoordinateDialog(this);
+    }
+
+    // 平移坐标对话框
+    showTranslateCoordinates(){
+        new TranslateCoordinatesDialog(this);
     }
 
     // 文件操作
@@ -725,7 +686,41 @@ class OSMEditor {
     onScroll(e){ e.preventDefault(); const factor=e.deltaY>0?0.9:1.1; this.scale*=factor; this.scale=this.clampScale(); this.redraw(); this.updateViewInfo(); }
     onDoubleClick(e){ /* 保留 */ }
 
-    onKey(e){ if (e.key==='Delete'){ this.deleteSelected(); return; } if (e.ctrlKey && e.key==='z'){ this.undo(); return; } if (e.ctrlKey && e.key==='y'){ this.redo(); return; } if (e.ctrlKey && e.key==='a'){ e.preventDefault(); this.selectAllPolygons(); return; } if (e.key==='Escape'){ this.cancelCreation(); this.clearSelection(); return; } if (this.renderMode==='3d' && (e.key==='h' || e.key==='H')){ this.editBuildingHeight && this.editBuildingHeight(); return; } }
+    onKey(e){ 
+        if (e.key==='Delete'){ this.deleteSelected(); return; } 
+        if (e.ctrlKey && e.key==='z'){ this.undo(); return; } 
+        if (e.ctrlKey && e.key==='y'){ this.redo(); return; } 
+        if (e.ctrlKey && e.key==='a'){ e.preventDefault(); this.selectAllPolygons(); return; } 
+        if (e.key==='Escape'){ this.cancelCreation(); this.clearSelection(); return; } 
+        
+        // 缩放快捷键
+        if (e.key==='+' || e.key==='='){ 
+            e.preventDefault(); 
+            this.scale *= 1.5; 
+            this.scale = this.clampScale(); 
+            this.redraw(); 
+            this.updateViewInfo(); 
+            return; 
+        }
+        if (e.key==='-' || e.key==='_'){ 
+            e.preventDefault(); 
+            this.scale *= 0.667; 
+            this.scale = this.clampScale(); 
+            this.redraw(); 
+            this.updateViewInfo(); 
+            return; 
+        }
+        if (e.key==='0' && (e.ctrlKey || e.metaKey)){ 
+            e.preventDefault(); 
+            this.fitToWindow(); 
+            return; 
+        }
+        
+        if (this.renderMode==='3d' && (e.key==='h' || e.key==='H')){ 
+            this.editBuildingHeight && this.editBuildingHeight(); 
+            return; 
+        } 
+    }
 }
 
 export default OSMEditor;

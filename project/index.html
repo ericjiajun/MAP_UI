@@ -14,7 +14,9 @@
             <div class="toolbar">
                 <div class="toolbar-group">
                     <label>文件</label>
-                    <button onclick="editor.importOSM()">导入</button>
+                    <button onclick="editor.importOSM()">导入OSM</button>
+                    <button onclick="editor.showCoordinateImport()">批量坐标</button>
+                    <button onclick="editor.showManualCoordinate()">手动输入</button>
                     <button onclick="editor.exportOSM()">导出</button>
                     <button onclick="editor.clearData()">清除</button>
                 </div>
@@ -46,7 +48,9 @@
                 <div class="toolbar-group">
                     <label>视图控制</label>
                     <button onclick="editor.resetView()">重置</button>
-                    <button onclick="editor.fitToWindow()">适应</button>
+                    <button onclick="editor.fitToWindow()" title="Ctrl+0 适应窗口">适应</button>
+                    <button onclick="editor.scale*=1.5; editor.scale=editor.clampScale(); editor.redraw();" title="+ 或 = 放大">🔍+</button>
+                    <button onclick="editor.scale*=0.667; editor.scale=editor.clampScale(); editor.redraw();" title="- 缩小">🔍-</button>
                     <button onclick="editor.rotateView(-15)">↺</button>
                     <button onclick="editor.rotateView(15)">↻</button>
                 </div>
@@ -64,6 +68,7 @@
                     <button onclick="editor.setSceneOrigin()">设原点</button>
                     <button onclick="editor.useCurrentCenterAsOrigin()">用中心</button>
                     <button onclick="editor.showMapCalibration()">地图校正</button>
+                    <button onclick="editor.showTranslateCoordinates()" style="background: #ff9800; color: white;">平移坐标</button>
                 </div>
                 
                 <div class="toolbar-group">
