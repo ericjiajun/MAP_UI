@@ -14,6 +14,7 @@ import MapCalibrationDialog from './ui/MapCalibrationDialog.js';
 import CoordinateImportDialog from './ui/CoordinateImportDialog.js';
 import ManualCoordinateDialog from './ui/ManualCoordinateDialog.js';
 import TranslateCoordinatesDialog from './ui/TranslateCoordinatesDialog.js';
+import ExportCoordinatesDialog from './ui/ExportCoordinatesDialog.js';
 import BasemapManager from './layers/BasemapManager.js';
 
 class OSMEditor {
@@ -622,6 +623,28 @@ class OSMEditor {
     // 平移坐标对话框
     showTranslateCoordinates(){
         new TranslateCoordinatesDialog(this);
+    }
+
+    // 导出坐标对话框
+    showExportCoordinates(){
+        console.log('showExportCoordinates 被调用');
+        console.log('selectedWay:', this.selectedWay);
+        console.log('selectedWays:', this.selectedWays);
+        
+        // 检查是否有选中的对象
+        if (!this.selectedWay && this.selectedWays.size === 0) {
+            alert('请先选择一个或多个多边形对象！');
+            return;
+        }
+        
+        console.log('创建 ExportCoordinatesDialog...');
+        try {
+            new ExportCoordinatesDialog(this);
+            console.log('ExportCoordinatesDialog 创建成功');
+        } catch (error) {
+            console.error('创建 ExportCoordinatesDialog 时出错:', error);
+            alert('创建导出对话框时出错: ' + error.message);
+        }
     }
 
     // 文件操作
